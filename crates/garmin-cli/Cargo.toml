@@ -18,6 +18,7 @@ clap.workspace = true
 # HTTP & Auth
 reqwest.workspace = true
 reqwest_cookie_store.workspace = true
+bytes.workspace = true
 
 # Async
 tokio.workspace = true

@@ -93,9 +93,9 @@ enum ActivityCommands {
     Download {
         /// Activity ID
         id: u64,
-        /// Output format (fit, gpx, tcx, kml)
-        #[arg(short = 'F', long, default_value = "fit")]
-        format: String,
+        /// File format (fit, gpx, tcx, kml)
+        #[arg(short = 't', long = "type", default_value = "fit")]
+        file_type: String,
         /// Output file path
         #[arg(short, long)]
         output: Option<String>,
@@ -120,12 +120,18 @@ enum HealthCommands {
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(short, long)]
         date: Option<String>,
+        /// Number of days to show (overrides date)
+        #[arg(long)]
+        days: Option<u32>,
     },
     /// Get stress data
     Stress {
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(short, long)]
         date: Option<String>,
+        /// Number of days to show (overrides date)
+        #[arg(long)]
+        days: Option<u32>,
     },
     /// Get body battery data
     BodyBattery {
@@ -199,51 +205,41 @@ async fn main() -> garmin_cli::Result<()> {
         },
         Commands::Activities { command } => match command {
             ActivityCommands::List { limit, start } => {
-                println!("Listing {} activities from offset {}", limit, start);
-                // TODO: Implement activity list
-                Ok(())
+                commands::list_activities(limit, start, cli.profile).await
             }
             ActivityCommands::Get { id } => {
-                println!("Getting activity {}", id);
-                // TODO: Implement activity get
-                Ok(())
+                commands::get_activity(id, cli.profile).await
             }
-            ActivityCommands::Download { id, format, output } => {
-                println!("Downloading activity {} as {} to {:?}", id, format, output);
-                // TODO: Implement activity download
-                Ok(())
+            ActivityCommands::Download { id, file_type, output } => {
+                commands::download_activity(id, &file_type, output, cli.profile).await
             }
             ActivityCommands::Upload { file } => {
-                println!("Uploading file {}", file);
-                // TODO: Implement activity upload
-                Ok(())
+                commands::upload_activity(&file, cli.profile).await
             }
         },
         Commands::Health { command } => match command {
             HealthCommands::Summary { date } => {
-                println!("Getting health summary for {:?}", date);
-                // TODO: Implement health summary
-                Ok(())
+                commands::summary(date, cli.profile).await
             }
-            HealthCommands::Sleep { date } => {
-                println!("Getting sleep data for {:?}", date);
-                // TODO: Implement sleep data
-                Ok(())
+            HealthCommands::Sleep { date, days } => {
+                if let Some(d) = days {
+                    commands::sleep_range(d, cli.profile).await
+                } else {
+                    commands::sleep(date, cli.profile).await
+                }
             }
-            HealthCommands::Stress { date } => {
-                println!("Getting stress data for {:?}", date);
-                // TODO: Implement stress data
-                Ok(())
+            HealthCommands::Stress { date, days } => {
+                if let Some(d) = days {
+                    commands::stress_range(d, cli.profile).await
+                } else {
+                    commands::stress(date, cli.profile).await
+                }
             }
             HealthCommands::BodyBattery { date } => {
-                println!("Getting body battery for {:?}", date);
-                // TODO: Implement body battery
-                Ok(())
+                commands::body_battery(date, cli.profile).await
             }
             HealthCommands::HeartRate { date } => {
-                println!("Getting heart rate for {:?}", date);
-                // TODO: Implement heart rate
-                Ok(())
+                commands::heart_rate(date, cli.profile).await
             }
         },
         Commands::Weight { command } => match command {

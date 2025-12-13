@@ -1,0 +1,47 @@
+[
+  {
+    "activityId": 21247810009,
+    "activityName": "Morning Run",
+    "startTimeLocal": "2025-12-04 07:30:00",
+    "startTimeGMT": "2025-12-04 06:30:00",
+    "activityType": {
+      "typeKey": "running",
+      "typeId": 1,
+      "parentTypeId": 17
+    },
+    "distance": 5670.0,
+    "duration": 1762.0,
+    "elapsedDuration": 1800.0,
+    "movingDuration": 1762.0,
+    "calories": 420.0,
+    "averageHR": 145.0,
+    "maxHR": 168.0,
+    "averageSpeed": 3.22,
+    "maxSpeed": 4.1,
+    "elevationGain": 45.0,
+    "elevationLoss": 43.0,
+    "averageRunningCadenceInStepsPerMinute": 172.0,
+    "steps": 5840,
+    "hasPolyline": true,
+    "ownerDisplayName": "TestUser"
+  },
+  {
+    "activityId": 21240592260,
+    "activityName": "Evening Walk",
+    "startTimeLocal": "2025-12-04 18:00:00",
+    "startTimeGMT": "2025-12-04 17:00:00",
+    "activityType": {
+      "typeKey": "walking",
+      "typeId": 9,
+      "parentTypeId": 17
+    },
+    "distance": 4800.0,
+    "duration": 4157.0,
+    "calories": 280.0,
+    "averageHR": 95.0,
+    "maxHR": 110.0,
+    "averageSpeed": 1.15,
+    "hasPolyline": true,
+    "ownerDisplayName": "TestUser"
+  }
+]

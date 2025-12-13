@@ -1,0 +1,313 @@
+//! Health commands for garmin-cli
+
+use crate::client::GarminClient;
+use crate::config::CredentialStore;
+use crate::error::Result;
+use chrono::{Duration, Local};
+
+use super::auth::refresh_token;
+
+/// Get daily summary for a date
+pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/usersummary-service/usersummary/daily/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    Ok(())
+}
+
+/// Get user's display name from profile
+async fn get_display_name(client: &GarminClient, oauth2: &crate::client::OAuth2Token) -> Result<String> {
+    // Try social profile endpoint
+    let profile: serde_json::Value = client.get_json(oauth2, "/userprofile-service/socialProfile").await?;
+    profile.get("displayName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| crate::error::GarminError::invalid_response("Could not get display name"))
+}
+
+/// Get sleep data for a date
+pub async fn sleep(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    // Get display name for sleep endpoint
+    let display_name = get_display_name(&client, &oauth2).await?;
+
+    let path = format!(
+        "/wellness-service/wellness/dailySleepData/{}?date={}&nonSleepBufferMinutes=60",
+        display_name, date
+    );
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    // Sleep data is nested under dailySleepDTO
+    let sleep_dto = data.get("dailySleepDTO").unwrap_or(&data);
+
+    print_sleep_summary(sleep_dto);
+
+    Ok(())
+}
+
+/// Get sleep data for multiple days
+pub async fn sleep_range(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+
+    // Get display name for sleep endpoint
+    let display_name = get_display_name(&client, &oauth2).await?;
+
+    println!("{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}", "Date", "Total", "Deep", "Light", "REM", "Score");
+    println!("{}", "-".repeat(58));
+
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        let path = format!(
+            "/wellness-service/wellness/dailySleepData/{}?date={}&nonSleepBufferMinutes=60",
+            display_name, date
+        );
+
+        match client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            Ok(data) => {
+                // Sleep data is nested under dailySleepDTO
+                let sleep_dto = data.get("dailySleepDTO").unwrap_or(&data);
+
+                // Calculate total from components since sleepTimeSeconds might not exist
+                let deep = sleep_dto.get("deepSleepSeconds").and_then(|v| v.as_i64());
+                let light = sleep_dto.get("lightSleepSeconds").and_then(|v| v.as_i64());
+                let rem = sleep_dto.get("remSleepSeconds").and_then(|v| v.as_i64());
+
+                let total_secs = deep.unwrap_or(0) + light.unwrap_or(0) + rem.unwrap_or(0);
+                let total = if total_secs > 0 {
+                    format_duration(Some(total_secs))
+                } else {
+                    "-".to_string()
+                };
+
+                let score = sleep_dto.get("sleepScores")
+                    .and_then(|s| s.get("overall"))
+                    .and_then(|o| o.get("value"))
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                println!("{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}", date, total,
+                    format_duration(deep), format_duration(light), format_duration(rem), score);
+            }
+            Err(_) => {
+                println!("{:<12} {:>8}", date, "no data");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get stress data for a date
+pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    // dailyStress endpoint: /wellness-service/wellness/dailyStress/{date}
+    let path = format!("/wellness-service/wellness/dailyStress/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    let avg = data.get("avgStressLevel").and_then(|v| v.as_i64());
+    let max = data.get("maxStressLevel").and_then(|v| v.as_i64());
+
+    println!("Stress for {}", date);
+    println!("{}", "-".repeat(50));
+    println!("Average: {}  Max: {}",
+        avg.map(|v| v.to_string()).unwrap_or("-".to_string()),
+        max.map(|v| v.to_string()).unwrap_or("-".to_string()));
+    println!();
+
+    // Parse hourly stress from stressValuesArray
+    if let Some(values) = data.get("stressValuesArray").and_then(|v| v.as_array()) {
+        // Group by hour and calculate averages
+        let mut hourly: std::collections::BTreeMap<u32, Vec<i64>> = std::collections::BTreeMap::new();
+
+        for entry in values {
+            if let Some(arr) = entry.as_array() {
+                if arr.len() >= 2 {
+                    let timestamp_ms = arr[0].as_i64().unwrap_or(0);
+                    let stress_val = arr[1].as_i64().unwrap_or(-1);
+
+                    if stress_val >= 0 {
+                        // Convert timestamp to hour (local time)
+                        let dt = chrono::DateTime::from_timestamp_millis(timestamp_ms)
+                            .map(|dt| dt.with_timezone(&chrono::Local));
+
+                        if let Some(local_dt) = dt {
+                            let hour = local_dt.format("%H").to_string().parse::<u32>().unwrap_or(0);
+                            hourly.entry(hour).or_default().push(stress_val);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("{:<6} {:>6} {:>6} {:>6}  {}", "Hour", "Avg", "Min", "Max", "Level");
+        println!("{}", "-".repeat(50));
+
+        for (hour, vals) in &hourly {
+            if !vals.is_empty() {
+                let avg: i64 = vals.iter().sum::<i64>() / vals.len() as i64;
+                let min = *vals.iter().min().unwrap_or(&0);
+                let max = *vals.iter().max().unwrap_or(&0);
+
+                let bar = stress_bar(avg);
+                let level = stress_level(avg);
+
+                println!("{:02}:00  {:>6} {:>6} {:>6}  {} {}", hour, avg, min, max, bar, level);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn stress_bar(level: i64) -> String {
+    let blocks = (level / 10) as usize;
+    let bar: String = "█".repeat(blocks.min(10));
+    format!("{:<10}", bar)
+}
+
+fn stress_level(level: i64) -> &'static str {
+    match level {
+        0..=25 => "Rest",
+        26..=50 => "Low",
+        51..=75 => "Medium",
+        _ => "High",
+    }
+}
+
+/// Get stress data for multiple days
+pub async fn stress_range(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+
+    println!("{:<12} {:>6} {:>6}", "Date", "Avg", "Max");
+    println!("{}", "-".repeat(28));
+
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        // dailyStress endpoint: /wellness-service/wellness/dailyStress/{date}
+        let path = format!("/wellness-service/wellness/dailyStress/{}", date);
+
+        match client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            Ok(data) => {
+                let avg = data.get("avgStressLevel")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let max = data.get("maxStressLevel")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                println!("{:<12} {:>6} {:>6}", date, avg, max);
+            }
+            Err(_) => {
+                println!("{:<12} {:>6}", date, "-");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get body battery data for a date
+pub async fn body_battery(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/wellness-service/wellness/bodyBattery/reports/daily?date={}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    Ok(())
+}
+
+/// Get heart rate data for a date
+pub async fn heart_rate(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/wellness-service/wellness/dailyHeartRate/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    Ok(())
+}
+
+fn resolve_date(date: Option<String>) -> Result<String> {
+    match date {
+        Some(d) => Ok(d),
+        None => Ok(Local::now().format("%Y-%m-%d").to_string()),
+    }
+}
+
+fn format_duration(seconds: Option<i64>) -> String {
+    match seconds {
+        Some(s) => {
+            let hours = s / 3600;
+            let mins = (s % 3600) / 60;
+            format!("{}h{:02}m", hours, mins)
+        }
+        None => "-".to_string(),
+    }
+}
+
+
+fn print_sleep_summary(data: &serde_json::Value) {
+    let deep = data.get("deepSleepSeconds").and_then(|v| v.as_i64());
+    let light = data.get("lightSleepSeconds").and_then(|v| v.as_i64());
+    let rem = data.get("remSleepSeconds").and_then(|v| v.as_i64());
+    let awake = data.get("awakeSleepSeconds").and_then(|v| v.as_i64());
+
+    // Calculate total from components
+    let total = deep.unwrap_or(0) + light.unwrap_or(0) + rem.unwrap_or(0);
+    let total_opt = if total > 0 { Some(total) } else { None };
+
+    println!("Sleep Summary");
+    println!("{}", "-".repeat(30));
+    println!("Total Sleep:  {}", format_duration(total_opt));
+    println!("Deep Sleep:   {}", format_duration(deep));
+    println!("Light Sleep:  {}", format_duration(light));
+    println!("REM Sleep:    {}", format_duration(rem));
+    println!("Awake:        {}", format_duration(awake));
+
+    if let Some(score) = data.get("sleepScores").and_then(|s| s.get("overall")).and_then(|o| o.get("value")).and_then(|v| v.as_i64()) {
+        println!("Sleep Score:  {}", score);
+    }
+}
+

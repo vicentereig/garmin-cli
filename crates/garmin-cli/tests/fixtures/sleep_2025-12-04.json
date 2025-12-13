@@ -1,0 +1,34 @@
+{
+  "dailySleepDTO": {
+    "calendarDate": "2025-12-04",
+    "sleepTimeSeconds": 31920,
+    "deepSleepSeconds": 8100,
+    "lightSleepSeconds": 15300,
+    "remSleepSeconds": 8520,
+    "awakeSleepSeconds": 720,
+    "avgHeartRate": 48.0,
+    "avgSleepStress": 15.0,
+    "sleepScores": {
+      "overall": {
+        "value": 88,
+        "qualifierKey": "GOOD"
+      },
+      "deepPercentage": {
+        "value": 25,
+        "qualifierKey": "GOOD"
+      },
+      "remPercentage": {
+        "value": 27,
+        "qualifierKey": "EXCELLENT"
+      },
+      "lightPercentage": {
+        "value": 48,
+        "qualifierKey": "FAIR"
+      }
+    },
+    "sleepStartTimestampGMT": 1733270400000,
+    "sleepEndTimestampGMT": 1733302320000
+  },
+  "avgOvernightHrv": 58.0,
+  "bodyBatteryChange": 55
+}

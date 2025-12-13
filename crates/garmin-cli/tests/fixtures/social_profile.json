@@ -1,0 +1,10 @@
+{
+  "displayName": "TestUser",
+  "fullName": "Test User",
+  "userName": "testuser@example.com",
+  "profileImageUrlLarge": null,
+  "profileImageUrlMedium": null,
+  "profileImageUrlSmall": null,
+  "location": "Test City",
+  "userProfilePK": 12345678
+}

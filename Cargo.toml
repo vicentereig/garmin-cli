@@ -14,8 +14,9 @@ repository = "https://github.com/vicentereig/garmin-cli"
 clap = { version = "4", features = ["derive", "env"] }
 
 # HTTP & Auth
-reqwest = { version = "0.12", features = ["json", "cookies"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "multipart"] }
 reqwest_cookie_store = "0.8"
+bytes = "1"
 
 # Async
 tokio = { version = "1", features = ["full"] }
