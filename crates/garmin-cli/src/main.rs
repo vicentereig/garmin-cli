@@ -37,15 +37,10 @@ enum Commands {
         #[command(subcommand)]
         command: ActivityCommands,
     },
-    /// Health metrics commands
+    /// Health metrics commands (including weight)
     Health {
         #[command(subcommand)]
         command: HealthCommands,
-    },
-    /// Weight and body composition commands
-    Weight {
-        #[command(subcommand)]
-        command: WeightCommands,
     },
     /// Device commands
     Devices {
@@ -145,12 +140,8 @@ enum HealthCommands {
         #[arg(short, long)]
         date: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-enum WeightCommands {
     /// List weight entries
-    List {
+    Weight {
         /// Start date (YYYY-MM-DD)
         #[arg(long)]
         from: Option<String>,
@@ -159,7 +150,7 @@ enum WeightCommands {
         to: Option<String>,
     },
     /// Add weight entry
-    Add {
+    WeightAdd {
         /// Weight value
         weight: f64,
         /// Unit (kg or lbs)
@@ -241,12 +232,10 @@ async fn main() -> garmin_cli::Result<()> {
             HealthCommands::HeartRate { date } => {
                 commands::heart_rate(date, cli.profile).await
             }
-        },
-        Commands::Weight { command } => match command {
-            WeightCommands::List { from, to } => {
+            HealthCommands::Weight { from, to } => {
                 commands::list_weight(from, to, cli.profile).await
             }
-            WeightCommands::Add { weight, unit } => {
+            HealthCommands::WeightAdd { weight, unit } => {
                 commands::add_weight(weight, &unit, cli.profile).await
             }
         },

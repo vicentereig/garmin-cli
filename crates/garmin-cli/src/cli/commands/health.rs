@@ -15,10 +15,51 @@ pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()
     let date = resolve_date(date)?;
     let client = GarminClient::new(&oauth1.domain);
 
-    let path = format!("/usersummary-service/usersummary/daily/{}", date);
+    let display_name = get_display_name(&client, &oauth2).await?;
+    let path = format!(
+        "/usersummary-service/usersummary/daily/{}?calendarDate={}",
+        display_name, date
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
-    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    println!("Daily Summary for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(steps) = data.get("totalSteps").and_then(|v| v.as_i64()) {
+        let goal = data.get("dailyStepGoal").and_then(|v| v.as_i64()).unwrap_or(10000);
+        let pct = (steps as f64 / goal as f64 * 100.0) as i64;
+        println!("Steps:           {:>6} / {} ({}%)", steps, goal, pct);
+    }
+
+    if let Some(cals) = data.get("totalKilocalories").and_then(|v| v.as_i64()) {
+        println!("Calories:        {:>6} kcal", cals);
+    }
+
+    if let Some(active) = data.get("activeKilocalories").and_then(|v| v.as_i64()) {
+        println!("Active Calories: {:>6} kcal", active);
+    }
+
+    if let Some(dist) = data.get("totalDistanceMeters").and_then(|v| v.as_i64()) {
+        println!("Distance:        {:>6.2} km", dist as f64 / 1000.0);
+    }
+
+    if let Some(floors) = data.get("floorsAscended").and_then(|v| v.as_i64()) {
+        let goal = data.get("floorsAscendedGoal").and_then(|v| v.as_i64()).unwrap_or(10);
+        println!("Floors:          {:>6} / {}", floors, goal);
+    }
+
+    if let Some(mins) = data.get("highlyActiveSeconds").and_then(|v| v.as_i64()) {
+        println!("Active Minutes:  {:>6}", mins / 60);
+    }
+
+    if let Some(stress) = data.get("averageStressLevel").and_then(|v| v.as_i64()) {
+        println!("Avg Stress:      {:>6}", stress);
+    }
+
+    if let Some(rhr) = data.get("restingHeartRate").and_then(|v| v.as_i64()) {
+        println!("Resting HR:      {:>6} bpm", rhr);
+    }
 
     Ok(())
 }
@@ -245,10 +286,43 @@ pub async fn body_battery(date: Option<String>, profile: Option<String>) -> Resu
     let date = resolve_date(date)?;
     let client = GarminClient::new(&oauth1.domain);
 
-    let path = format!("/wellness-service/wellness/bodyBattery/reports/daily?date={}", date);
+    let path = format!(
+        "/wellness-service/wellness/bodyBattery/reports/daily?startDate={}&endDate={}",
+        date, date
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
-    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    println!("Body Battery for {}", date);
+    println!("{}", "-".repeat(40));
+
+    // Body battery returns an array of daily values
+    if let Some(arr) = data.as_array() {
+        for day in arr {
+            if let Some(charged) = day.get("charged").and_then(|v| v.as_i64()) {
+                println!("Charged:    +{}", charged);
+            }
+            if let Some(drained) = day.get("drained").and_then(|v| v.as_i64()) {
+                println!("Drained:    -{}", drained);
+            }
+            if let Some(start) = day.get("startTimestampGMT").and_then(|v| v.as_i64()) {
+                if let Some(dt) = chrono::DateTime::from_timestamp_millis(start) {
+                    let local = dt.with_timezone(&chrono::Local);
+                    if let Some(val) = day.get("startValue").and_then(|v| v.as_i64()) {
+                        println!("Start:      {} at {}", val, local.format("%H:%M"));
+                    }
+                }
+            }
+            if let Some(end) = day.get("endTimestampGMT").and_then(|v| v.as_i64()) {
+                if let Some(dt) = chrono::DateTime::from_timestamp_millis(end) {
+                    let local = dt.with_timezone(&chrono::Local);
+                    if let Some(val) = day.get("endValue").and_then(|v| v.as_i64()) {
+                        println!("End:        {} at {}", val, local.format("%H:%M"));
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -261,10 +335,44 @@ pub async fn heart_rate(date: Option<String>, profile: Option<String>) -> Result
     let date = resolve_date(date)?;
     let client = GarminClient::new(&oauth1.domain);
 
-    let path = format!("/wellness-service/wellness/dailyHeartRate/{}", date);
+    let display_name = get_display_name(&client, &oauth2).await?;
+    let path = format!(
+        "/wellness-service/wellness/dailyHeartRate/{}?date={}",
+        display_name, date
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
-    println!("{}", serde_json::to_string_pretty(&data)?);
+
+    println!("Heart Rate for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(rhr) = data.get("restingHeartRate").and_then(|v| v.as_i64()) {
+        println!("Resting HR:  {} bpm", rhr);
+    }
+
+    if let Some(max) = data.get("maxHeartRate").and_then(|v| v.as_i64()) {
+        println!("Max HR:      {} bpm", max);
+    }
+
+    if let Some(min) = data.get("minHeartRate").and_then(|v| v.as_i64()) {
+        println!("Min HR:      {} bpm", min);
+    }
+
+    // Show HR zones if available
+    if let Some(zones) = data.get("heartRateZones").and_then(|v| v.as_array()) {
+        println!();
+        println!("Heart Rate Zones:");
+        for zone in zones {
+            if let (Some(zone_num), Some(mins)) = (
+                zone.get("zoneNumber").and_then(|v| v.as_i64()),
+                zone.get("secsInZone").and_then(|v| v.as_i64()),
+            ) {
+                if mins > 0 {
+                    println!("  Zone {}: {}m", zone_num, mins / 60);
+                }
+            }
+        }
+    }
 
     Ok(())
 }
