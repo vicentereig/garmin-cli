@@ -242,6 +242,149 @@ mod profile_tests {
     }
 }
 
+mod weight_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_list_weight() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/weight_list.json");
+
+        Mock::given(method("GET"))
+            .and(path("/weight-service/weight/dateRange"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/weight-service/weight/dateRange?startDate=2025-12-01&endDate=2025-12-13")
+            .await
+            .expect("Failed to list weight");
+
+        let entries = result["dateWeightList"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["weight"], 80200);
+        assert_eq!(entries[0]["calendarDate"], "2025-12-13");
+    }
+
+    #[tokio::test]
+    async fn test_weight_body_composition() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/weight_list.json")).unwrap();
+
+        let entry = &fixture["dateWeightList"][0];
+
+        assert_eq!(entry["bmi"].as_f64().unwrap(), 24.2);
+        assert_eq!(entry["bodyFat"].as_f64().unwrap(), 21.9);
+        assert_eq!(entry["muscleMass"].as_i64().unwrap(), 32800);
+    }
+
+    #[tokio::test]
+    async fn test_weight_total_average() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/weight_list.json")).unwrap();
+
+        let avg = &fixture["totalAverage"];
+        assert_eq!(avg["weight"].as_i64().unwrap(), 79950);
+        assert_eq!(avg["bmi"].as_f64().unwrap(), 24.15);
+    }
+}
+
+mod device_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_list_devices() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/devices_list.json");
+
+        Mock::given(method("GET"))
+            .and(path("/device-service/deviceregistration/devices"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let devices: Vec<serde_json::Value> = client
+            .get_json(&token, "/device-service/deviceregistration/devices")
+            .await
+            .expect("Failed to list devices");
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0]["deviceTypeName"], "Forerunner 955 Solar");
+        assert_eq!(devices[0]["deviceId"], 3442975663i64);
+    }
+
+    #[tokio::test]
+    async fn test_device_firmware_version() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/devices_list.json")).unwrap();
+
+        let watch = &fixture[0];
+        assert_eq!(watch["currentFirmwareVersion"], "26.08");
+        assert_eq!(watch["partNumber"], "006-B4024-00");
+
+        let scale = &fixture[1];
+        assert_eq!(scale["currentFirmwareVersion"], "3.30");
+    }
+
+    #[tokio::test]
+    async fn test_device_with_optional_last_sync() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/devices_list.json")).unwrap();
+
+        // First device has lastSyncTime
+        assert!(fixture[0].get("lastSyncTime").is_some());
+
+        // Second device has no lastSyncTime
+        assert!(fixture[1].get("lastSyncTime").is_none());
+    }
+}
+
+mod settings_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_user_settings() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/user_settings.json");
+
+        Mock::given(method("GET"))
+            .and(path("/userprofile-service/userprofile/user-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let settings: serde_json::Value = client
+            .get_json(&token, "/userprofile-service/userprofile/user-settings")
+            .await
+            .expect("Failed to get user settings");
+
+        assert_eq!(settings["measurementSystem"], "metric");
+        assert_eq!(settings["dateFormat"], "dd/mm/yyyy");
+        assert_eq!(settings["timezone"], "Europe/Madrid");
+    }
+
+    #[tokio::test]
+    async fn test_user_physical_info() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/user_settings.json")).unwrap();
+
+        assert_eq!(fixture["height"].as_f64().unwrap(), 182.0);
+        assert_eq!(fixture["weight"].as_f64().unwrap(), 80200.0);
+        assert_eq!(fixture["gender"], "male");
+        assert_eq!(fixture["birthDate"], "1990-05-15");
+    }
+}
+
 mod error_handling_tests {
     use super::*;
 

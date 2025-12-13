@@ -244,38 +244,26 @@ async fn main() -> garmin_cli::Result<()> {
         },
         Commands::Weight { command } => match command {
             WeightCommands::List { from, to } => {
-                println!("Listing weight from {:?} to {:?}", from, to);
-                // TODO: Implement weight list
-                Ok(())
+                commands::list_weight(from, to, cli.profile).await
             }
             WeightCommands::Add { weight, unit } => {
-                println!("Adding weight {} {}", weight, unit);
-                // TODO: Implement weight add
-                Ok(())
+                commands::add_weight(weight, &unit, cli.profile).await
             }
         },
         Commands::Devices { command } => match command {
             DeviceCommands::List => {
-                println!("Listing devices...");
-                // TODO: Implement device list
-                Ok(())
+                commands::list_devices(cli.profile).await
             }
             DeviceCommands::Get { id } => {
-                println!("Getting device {}", id);
-                // TODO: Implement device get
-                Ok(())
+                commands::get_device(&id, cli.profile).await
             }
         },
         Commands::Profile { command } => match command {
             ProfileCommands::Show => {
-                println!("Showing profile...");
-                // TODO: Implement profile show
-                Ok(())
+                commands::show_profile(cli.profile).await
             }
             ProfileCommands::Settings => {
-                println!("Showing settings...");
-                // TODO: Implement settings show
-                Ok(())
+                commands::show_settings(cli.profile).await
             }
         },
     };

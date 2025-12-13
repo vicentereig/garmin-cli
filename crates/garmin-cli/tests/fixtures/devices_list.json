@@ -1,0 +1,17 @@
+[
+  {
+    "deviceTypeName": "Forerunner 955 Solar",
+    "displayName": "Forerunner 955 Solar",
+    "partNumber": "006-B4024-00",
+    "currentFirmwareVersion": "26.08",
+    "deviceId": 3442975663,
+    "lastSyncTime": "2025-12-13T15:30:00.000"
+  },
+  {
+    "deviceTypeName": "Index S2",
+    "displayName": "Index S2",
+    "partNumber": "006-B3461-00",
+    "currentFirmwareVersion": "3.30",
+    "deviceId": 1234567890
+  }
+]

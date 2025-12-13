@@ -85,6 +85,26 @@ impl GarminClient {
         })
     }
 
+    /// Make an authenticated POST request with JSON body
+    pub async fn post_json(&self, token: &OAuth2Token, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = self.build_url(path);
+        let headers = self.build_headers(token);
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(GarminError::Http)?;
+
+        let response = self.handle_response_status(response).await?;
+        response.json().await.map_err(|e| {
+            GarminError::invalid_response(format!("Failed to parse JSON response: {}", e))
+        })
+    }
+
     /// Make an authenticated GET request and return raw bytes (for file downloads)
     pub async fn download(&self, token: &OAuth2Token, path: &str) -> Result<Bytes> {
         let response = self.get(token, path).await?;

@@ -1,0 +1,11 @@
+{
+  "measurementSystem": "metric",
+  "dateFormat": "dd/mm/yyyy",
+  "timeFormat": "24h",
+  "timezone": "Europe/Madrid",
+  "firstDayOfWeek": "monday",
+  "height": 182.0,
+  "weight": 80200.0,
+  "gender": "male",
+  "birthDate": "1990-05-15"
+}

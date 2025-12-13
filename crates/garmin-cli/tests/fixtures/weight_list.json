@@ -1,0 +1,22 @@
+{
+  "dateWeightList": [
+    {
+      "calendarDate": "2025-12-13",
+      "weight": 80200,
+      "bmi": 24.2,
+      "bodyFat": 21.9,
+      "muscleMass": 32800
+    },
+    {
+      "calendarDate": "2025-12-12",
+      "weight": 79700,
+      "bmi": 24.1,
+      "bodyFat": 21.1,
+      "muscleMass": 32700
+    }
+  ],
+  "totalAverage": {
+    "weight": 79950,
+    "bmi": 24.15
+  }
+}
