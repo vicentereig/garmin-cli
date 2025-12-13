@@ -396,6 +396,67 @@ fn format_duration(seconds: Option<i64>) -> String {
 }
 
 
+/// Get daily steps for a date range
+pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let num_days = days.unwrap_or(10);
+    let start_date = today - Duration::days(num_days as i64 - 1);
+
+    let path = format!(
+        "/usersummary-service/stats/steps/daily/{}/{}",
+        start_date.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
+    );
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("{:<12} {:>8} {:>8} {:>6} {:>10}", "Date", "Steps", "Goal", "%", "Distance");
+    println!("{}", "-".repeat(50));
+
+    let mut total_steps: i64 = 0;
+    let mut total_goal: i64 = 0;
+    let mut count = 0;
+
+    if let Some(entries) = data.as_array() {
+        for entry in entries.iter().rev() {
+            let date = entry.get("calendarDate")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+
+            let steps_val = entry.get("totalSteps").and_then(|v| v.as_i64()).unwrap_or(0);
+            let goal = entry.get("stepGoal").and_then(|v| v.as_i64()).unwrap_or(10000);
+            let distance = entry.get("totalDistance")
+                .and_then(|v| v.as_f64())
+                .map(|d| d / 1000.0);
+
+            let pct = if goal > 0 { (steps_val as f64 / goal as f64 * 100.0) as i64 } else { 0 };
+
+            let dist_str = distance.map(|d| format!("{:.2} km", d)).unwrap_or("-".to_string());
+
+            println!("{:<12} {:>8} {:>8} {:>5}% {:>10}",
+                date, steps_val, goal, pct, dist_str);
+
+            total_steps += steps_val;
+            total_goal += goal;
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        println!("{}", "-".repeat(50));
+        let avg_steps = total_steps / count;
+        let avg_goal = total_goal / count;
+        let avg_pct = if avg_goal > 0 { (avg_steps as f64 / avg_goal as f64 * 100.0) as i64 } else { 0 };
+        println!("{:<12} {:>8} {:>8} {:>5}%", "Average", avg_steps, avg_goal, avg_pct);
+    }
+
+    Ok(())
+}
+
 fn print_sleep_summary(data: &serde_json::Value) {
     let deep = data.get("deepSleepSeconds").and_then(|v| v.as_i64());
     let light = data.get("lightSleepSeconds").and_then(|v| v.as_i64());

@@ -140,6 +140,12 @@ enum HealthCommands {
         #[arg(short, long)]
         date: Option<String>,
     },
+    /// Get daily step counts
+    Steps {
+        /// Number of days to show (default: 10)
+        #[arg(long, default_value = "10")]
+        days: u32,
+    },
     /// List weight entries
     Weight {
         /// Start date (YYYY-MM-DD)
@@ -231,6 +237,9 @@ async fn main() -> garmin_cli::Result<()> {
             }
             HealthCommands::HeartRate { date } => {
                 commands::heart_rate(date, cli.profile).await
+            }
+            HealthCommands::Steps { days } => {
+                commands::steps(Some(days), cli.profile).await
             }
             HealthCommands::Weight { from, to } => {
                 commands::list_weight(from, to, cli.profile).await
