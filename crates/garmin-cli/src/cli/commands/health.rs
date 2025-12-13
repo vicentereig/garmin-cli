@@ -32,12 +32,12 @@ pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()
         println!("Steps:           {:>6} / {} ({}%)", steps, goal, pct);
     }
 
-    if let Some(cals) = data.get("totalKilocalories").and_then(|v| v.as_i64()) {
-        println!("Calories:        {:>6} kcal", cals);
+    if let Some(cals) = data.get("totalKilocalories").and_then(|v| v.as_f64()) {
+        println!("Calories:        {:>6.0} kcal", cals);
     }
 
-    if let Some(active) = data.get("activeKilocalories").and_then(|v| v.as_i64()) {
-        println!("Active Calories: {:>6} kcal", active);
+    if let Some(active) = data.get("activeKilocalories").and_then(|v| v.as_f64()) {
+        println!("Active Calories: {:>6.0} kcal", active);
     }
 
     if let Some(dist) = data.get("totalDistanceMeters").and_then(|v| v.as_i64()) {
@@ -395,6 +395,285 @@ fn format_duration(seconds: Option<i64>) -> String {
     }
 }
 
+
+/// Get calorie data for a date range
+pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let display_name = get_display_name(&client, &oauth2).await?;
+    let today = Local::now().date_naive();
+    let num_days = days.unwrap_or(10);
+
+    println!("{:<12} {:>8} {:>8} {:>8} {:>8}", "Date", "Total", "Active", "BMR", "Food");
+    println!("{}", "-".repeat(50));
+
+    let mut total_cals: i64 = 0;
+    let mut total_active: i64 = 0;
+    let mut count = 0;
+
+    for i in 0..num_days {
+        let date = today - Duration::days(i as i64);
+        let path = format!(
+            "/usersummary-service/usersummary/daily/{}?calendarDate={}",
+            display_name, date.format("%Y-%m-%d")
+        );
+
+        match client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            Ok(data) => {
+                let total = data.get("totalKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+                let active = data.get("activeKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+                let bmr = data.get("bmrKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
+                let food = data.get("consumedKilocalories").and_then(|v| v.as_f64()).map(|f| f as i64);
+
+                let food_str = food.map(|f| format!("{}", f)).unwrap_or("-".to_string());
+
+                println!("{:<12} {:>8} {:>8} {:>8} {:>8}", date, total, active, bmr, food_str);
+
+                total_cals += total;
+                total_active += active;
+                count += 1;
+            }
+            Err(_) => {
+                println!("{:<12} {:>8}", date, "-");
+            }
+        }
+    }
+
+    if count > 0 {
+        println!("{}", "-".repeat(50));
+        println!("{:<12} {:>8} {:>8}", "Average", total_cals / count, total_active / count);
+    }
+
+    Ok(())
+}
+
+/// Get VO2 max and performance metrics
+pub async fn vo2max(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("VO2 Max / Max Metrics for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(arr) = data.as_array() {
+        for entry in arr {
+            // Generic (running) VO2 max
+            if let Some(generic) = entry.get("generic") {
+                if let Some(vo2) = generic.get("vo2MaxPreciseValue").and_then(|v| v.as_f64()) {
+                    println!("VO2 Max (Run):   {:.1} ml/kg/min", vo2);
+                }
+            }
+            // Cycling VO2 max
+            if let Some(cycling) = entry.get("cycling") {
+                if let Some(vo2) = cycling.get("vo2MaxPreciseValue").and_then(|v| v.as_f64()) {
+                    println!("VO2 Max (Cycle): {:.1} ml/kg/min", vo2);
+                }
+            }
+            // Heat/Altitude acclimation
+            if let Some(accl) = entry.get("heatAltitudeAcclimation") {
+                if let Some(heat) = accl.get("heatAcclimationPercentage").and_then(|v| v.as_i64()) {
+                    if heat > 0 {
+                        println!("Heat Acclim:     {}%", heat);
+                    }
+                }
+                if let Some(alt) = accl.get("altitudeAcclimation").and_then(|v| v.as_i64()) {
+                    if alt > 0 {
+                        println!("Alt Acclim:      {}%", alt);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get training readiness score
+pub async fn training_readiness(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Training Readiness for {}", date);
+    println!("{}", "-".repeat(40));
+
+    // Get first (most recent) entry from array
+    let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+
+    if let Some(score) = entry.get("score").and_then(|v| v.as_i64()) {
+        let level = entry.get("level").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        println!("Score:           {} ({})", score, level);
+    }
+
+    if let Some(feedback) = entry.get("feedbackShort").and_then(|v| v.as_str()) {
+        let display = feedback.replace('_', " ").to_lowercase();
+        println!("Status:          {}", display);
+    }
+
+    if let Some(sleep) = entry.get("sleepScore").and_then(|v| v.as_i64()) {
+        println!("Sleep Score:     {}", sleep);
+    }
+
+    if let Some(recovery) = entry.get("recoveryTime").and_then(|v| v.as_i64()) {
+        let hours = recovery / 60;
+        let mins = recovery % 60;
+        println!("Recovery Time:   {}h {}m", hours, mins);
+    }
+
+    if let Some(hrv) = entry.get("hrvWeeklyAverage").and_then(|v| v.as_i64()) {
+        println!("HRV Weekly Avg:  {} ms", hrv);
+    }
+
+    if let Some(load) = entry.get("acuteLoad").and_then(|v| v.as_f64()) {
+        println!("Acute Load:      {:.0}", load);
+    }
+
+    Ok(())
+}
+
+/// Get training status
+pub async fn training_status(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/metrics-service/metrics/trainingstatus/aggregated/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Training Status for {}", date);
+    println!("{}", "-".repeat(40));
+
+    // Get first entry if array
+    let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+
+    if let Some(status) = entry.get("trainingStatusPhrase").and_then(|v| v.as_str()) {
+        println!("Status:          {}", status);
+    }
+
+    if let Some(load) = entry.get("weeklyTrainingLoad").and_then(|v| v.as_f64()) {
+        println!("Weekly Load:     {:.0}", load);
+    }
+
+    if let Some(load7) = entry.get("sevenDayLoad").and_then(|v| v.as_f64()) {
+        println!("7-Day Load:      {:.0}", load7);
+    }
+
+    if let Some(load_status) = entry.get("loadStatus").and_then(|v| v.as_str()) {
+        println!("Load Status:     {}", load_status);
+    }
+
+    if let Some(focus) = entry.get("trainingLoadBalance").and_then(|v| v.as_str()) {
+        println!("Focus:           {}", focus);
+    }
+
+    if let Some(vo2) = entry.get("mostRecentVO2Max").and_then(|v| v.as_f64()) {
+        println!("VO2 Max:         {:.1}", vo2);
+    }
+
+    if let Some(chronic) = entry.get("chronicTrainingLoad").and_then(|v| v.as_f64()) {
+        println!("Chronic Load:    {:.0}", chronic);
+    }
+
+    Ok(())
+}
+
+/// Get HRV data
+pub async fn hrv(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/hrv-service/hrv/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("HRV Data for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(summary) = data.get("hrvSummary") {
+        if let Some(weekly) = summary.get("weeklyAvg").and_then(|v| v.as_i64()) {
+            println!("Weekly Avg:      {} ms", weekly);
+        }
+        if let Some(last_night) = summary.get("lastNight").and_then(|v| v.as_i64()) {
+            println!("Last Night:      {} ms", last_night);
+        }
+        if let Some(status) = summary.get("status").and_then(|v| v.as_str()) {
+            println!("Status:          {}", status);
+        }
+        if let Some(baseline) = summary.get("baseline") {
+            if let (Some(low), Some(high)) = (
+                baseline.get("lowUpper").and_then(|v| v.as_i64()),
+                baseline.get("balancedUpper").and_then(|v| v.as_i64()),
+            ) {
+                println!("Baseline:        {}-{} ms", low, high);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get fitness age
+pub async fn fitness_age(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/fitnessage-service/fitnessage/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Fitness Age for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(age) = data.get("fitnessAge").and_then(|v| v.as_f64()) {
+        println!("Fitness Age:     {:.0} years", age);
+    }
+
+    if let Some(chrono) = data.get("chronologicalAge").and_then(|v| v.as_f64()) {
+        println!("Actual Age:      {:.0} years", chrono);
+    }
+
+    if let Some(vo2) = data.get("vo2Max").and_then(|v| v.as_f64()) {
+        println!("VO2 Max:         {:.1} ml/kg/min", vo2);
+    }
+
+    if let Some(bmi) = data.get("bmi").and_then(|v| v.as_f64()) {
+        println!("BMI:             {:.1}", bmi);
+    }
+
+    if let Some(rhr) = data.get("restingHeartRate").and_then(|v| v.as_i64()) {
+        println!("Resting HR:      {} bpm", rhr);
+    }
+
+    if let Some(vigorous) = data.get("vigorousActivityMinutes").and_then(|v| v.as_i64()) {
+        println!("Vigorous Mins:   {} min/week", vigorous);
+    }
+
+    Ok(())
+}
 
 /// Get daily steps for a date range
 pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {

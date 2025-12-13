@@ -146,6 +146,42 @@ enum HealthCommands {
         #[arg(long, default_value = "10")]
         days: u32,
     },
+    /// Get calorie data
+    Calories {
+        /// Number of days to show (default: 10)
+        #[arg(long, default_value = "10")]
+        days: u32,
+    },
+    /// Get VO2 max and performance metrics
+    Vo2max {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get training readiness score
+    TrainingReadiness {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get training status
+    TrainingStatus {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get HRV (heart rate variability) data
+    Hrv {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get fitness age
+    FitnessAge {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
     /// List weight entries
     Weight {
         /// Start date (YYYY-MM-DD)
@@ -240,6 +276,24 @@ async fn main() -> garmin_cli::Result<()> {
             }
             HealthCommands::Steps { days } => {
                 commands::steps(Some(days), cli.profile).await
+            }
+            HealthCommands::Calories { days } => {
+                commands::calories(Some(days), cli.profile).await
+            }
+            HealthCommands::Vo2max { date } => {
+                commands::vo2max(date, cli.profile).await
+            }
+            HealthCommands::TrainingReadiness { date } => {
+                commands::training_readiness(date, cli.profile).await
+            }
+            HealthCommands::TrainingStatus { date } => {
+                commands::training_status(date, cli.profile).await
+            }
+            HealthCommands::Hrv { date } => {
+                commands::hrv(date, cli.profile).await
+            }
+            HealthCommands::FitnessAge { date } => {
+                commands::fitness_age(date, cli.profile).await
             }
             HealthCommands::Weight { from, to } => {
                 commands::list_weight(from, to, cli.profile).await
