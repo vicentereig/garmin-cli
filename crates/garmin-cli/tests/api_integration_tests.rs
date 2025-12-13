@@ -385,6 +385,183 @@ mod settings_tests {
     }
 }
 
+mod calories_tests {
+    #[tokio::test]
+    async fn test_calories_summary_fields() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/calories_summary.json")).unwrap();
+
+        assert_eq!(fixture["totalKilocalories"].as_f64().unwrap(), 2824.0);
+        assert_eq!(fixture["activeKilocalories"].as_f64().unwrap(), 715.0);
+        assert_eq!(fixture["bmrKilocalories"].as_f64().unwrap(), 2109.0);
+        assert!(fixture["consumedKilocalories"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_calories_with_steps() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/calories_summary.json")).unwrap();
+
+        assert_eq!(fixture["totalSteps"].as_i64().unwrap(), 20708);
+        assert_eq!(fixture["dailyStepGoal"].as_i64().unwrap(), 15000);
+    }
+}
+
+mod vo2max_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_vo2max() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/vo2max.json");
+
+        Mock::given(method("GET"))
+            .and(path("/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: Vec<serde_json::Value> = client
+            .get_json(&token, "/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10")
+            .await
+            .expect("Failed to get VO2 max");
+
+        assert_eq!(result.len(), 1);
+        let generic = &result[0]["generic"];
+        assert_eq!(generic["vo2MaxPreciseValue"].as_f64().unwrap(), 53.0);
+    }
+
+    #[tokio::test]
+    async fn test_vo2max_structure() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/vo2max.json")).unwrap();
+
+        let entry = &fixture[0];
+        assert!(entry.get("generic").is_some());
+        assert!(entry.get("cycling").is_some());
+        assert!(entry.get("heatAltitudeAcclimation").is_some());
+    }
+}
+
+mod training_readiness_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_training_readiness() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/training_readiness.json");
+
+        Mock::given(method("GET"))
+            .and(path("/metrics-service/metrics/trainingreadiness/2025-12-13"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: Vec<serde_json::Value> = client
+            .get_json(&token, "/metrics-service/metrics/trainingreadiness/2025-12-13")
+            .await
+            .expect("Failed to get training readiness");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["score"].as_i64().unwrap(), 69);
+        assert_eq!(result[0]["level"], "MODERATE");
+    }
+
+    #[tokio::test]
+    async fn test_training_readiness_factors() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/training_readiness.json")).unwrap();
+
+        let entry = &fixture[0];
+        assert_eq!(entry["sleepScore"].as_i64().unwrap(), 88);
+        assert_eq!(entry["hrvWeeklyAverage"].as_i64().unwrap(), 65);
+        assert_eq!(entry["acuteLoad"].as_i64().unwrap(), 314);
+        assert_eq!(entry["recoveryTime"].as_i64().unwrap(), 273);
+    }
+}
+
+mod hrv_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_hrv() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/hrv.json");
+
+        Mock::given(method("GET"))
+            .and(path("/hrv-service/hrv/2025-12-13"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/hrv-service/hrv/2025-12-13")
+            .await
+            .expect("Failed to get HRV data");
+
+        let summary = &result["hrvSummary"];
+        assert_eq!(summary["weeklyAvg"].as_i64().unwrap(), 65);
+        assert_eq!(summary["status"], "BALANCED");
+    }
+
+    #[tokio::test]
+    async fn test_hrv_baseline() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/hrv.json")).unwrap();
+
+        let baseline = &fixture["hrvSummary"]["baseline"];
+        assert_eq!(baseline["lowUpper"].as_i64().unwrap(), 61);
+        assert_eq!(baseline["balancedUpper"].as_i64().unwrap(), 80);
+    }
+}
+
+mod fitness_age_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_fitness_age() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/fitness_age.json");
+
+        Mock::given(method("GET"))
+            .and(path("/fitnessage-service/fitnessage/2025-12-13"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/fitnessage-service/fitnessage/2025-12-13")
+            .await
+            .expect("Failed to get fitness age");
+
+        assert_eq!(result["fitnessAge"].as_f64().unwrap(), 37.0);
+        assert_eq!(result["chronologicalAge"].as_f64().unwrap(), 43.0);
+    }
+
+    #[tokio::test]
+    async fn test_fitness_age_metrics() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/fitness_age.json")).unwrap();
+
+        assert_eq!(fixture["vo2Max"].as_f64().unwrap(), 53.0);
+        assert_eq!(fixture["bmi"].as_f64().unwrap(), 24.2);
+        assert_eq!(fixture["restingHeartRate"].as_i64().unwrap(), 43);
+        assert_eq!(fixture["vigorousActivityMinutes"].as_i64().unwrap(), 150);
+    }
+}
+
 mod error_handling_tests {
     use super::*;
 

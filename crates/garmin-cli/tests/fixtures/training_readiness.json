@@ -1,0 +1,23 @@
+[
+  {
+    "acuteLoad": 314,
+    "acwrFactorFeedback": "GOOD",
+    "acwrFactorPercent": 79,
+    "calendarDate": "2025-12-13",
+    "feedbackShort": "RECOVERED_AND_READY",
+    "hrvFactorFeedback": "GOOD",
+    "hrvFactorPercent": 74,
+    "hrvWeeklyAverage": 65,
+    "level": "MODERATE",
+    "recoveryTime": 273,
+    "recoveryTimeFactorFeedback": "GOOD",
+    "recoveryTimeFactorPercent": 92,
+    "score": 69,
+    "sleepScore": 88,
+    "sleepScoreFactorFeedback": "GOOD",
+    "sleepScoreFactorPercent": 86,
+    "stressHistoryFactorFeedback": "GOOD",
+    "stressHistoryFactorPercent": 77,
+    "userProfilePK": 12345678
+  }
+]

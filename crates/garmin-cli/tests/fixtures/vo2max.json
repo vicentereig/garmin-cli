@@ -1,0 +1,18 @@
+[
+  {
+    "cycling": null,
+    "generic": {
+      "calendarDate": "2025-12-10",
+      "fitnessAge": null,
+      "maxMetCategory": 0,
+      "vo2MaxPreciseValue": 53.0,
+      "vo2MaxValue": 53.0
+    },
+    "heatAltitudeAcclimation": {
+      "acclimationPercentage": 0,
+      "altitudeAcclimation": 0,
+      "heatAcclimationPercentage": 0
+    },
+    "userId": 12345678
+  }
+]

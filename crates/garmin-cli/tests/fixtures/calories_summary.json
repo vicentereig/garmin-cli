@@ -1,0 +1,16 @@
+{
+  "calendarDate": "2025-12-13",
+  "totalKilocalories": 2824.0,
+  "activeKilocalories": 715.0,
+  "bmrKilocalories": 2109.0,
+  "consumedKilocalories": null,
+  "totalSteps": 20708,
+  "dailyStepGoal": 15000,
+  "totalDistanceMeters": 15320,
+  "activeSeconds": 1800,
+  "highlyActiveSeconds": 300,
+  "floorsAscended": 12,
+  "floorsAscendedGoal": 10,
+  "averageStressLevel": 23,
+  "restingHeartRate": 43
+}

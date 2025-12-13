@@ -1,0 +1,17 @@
+{
+  "hrvSummary": {
+    "calendarDate": "2025-12-13",
+    "weeklyAvg": 65,
+    "lastNight": 68,
+    "status": "BALANCED",
+    "feedbackPhrase": "HRV_BALANCED_NORMAL_RANGE",
+    "baseline": {
+      "lowUpper": 61,
+      "balancedLow": 61,
+      "balancedUpper": 80
+    }
+  },
+  "hrvValues": [],
+  "startTimestampGMT": 1734048000000,
+  "endTimestampGMT": 1734134400000
+}
