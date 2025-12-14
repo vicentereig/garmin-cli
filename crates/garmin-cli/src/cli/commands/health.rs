@@ -847,27 +847,31 @@ pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> 
 
     let date = resolve_date(date)?;
     let client = GarminClient::new(&oauth1.domain);
+    let display_name = get_display_name(&client, &oauth2).await?;
 
-    let path = format!("/metrics-service/metrics/racepredictions/daily/{}", date);
+    let path = format!("/metrics-service/metrics/racepredictions/latest/{}", display_name);
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
     println!("Race Predictions for {}", date);
-    println!("{}", "-".repeat(40));
+    println!("{}", "-".repeat(50));
+    println!("{:<16} {:>12} {:>14}", "Race", "Time", "Pace");
+    println!("{}", "-".repeat(50));
 
-    let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+    // API returns flat structure: time5K, time10K, timeHalfMarathon, timeMarathon
+    let races = [
+        ("time5K", "5K", 5.0),
+        ("time10K", "10K", 10.0),
+        ("timeHalfMarathon", "Half Marathon", 21.0975),
+        ("timeMarathon", "Marathon", 42.195),
+    ];
 
-    if let Some(preds) = entry.get("racePredictions") {
-        for (race, label) in [("5K", "5K"), ("10K", "10K"), ("halfMarathon", "Half Marathon"), ("marathon", "Marathon")] {
-            if let Some(pred) = preds.get(race) {
-                if let Some(time) = pred.get("predictedTime").and_then(|v| v.as_f64()) {
-                    let formatted = format_race_time(time);
-                    let pace = pred.get("predictedPace").and_then(|v| v.as_f64())
-                        .map(|p| format_pace(p))
-                        .unwrap_or_else(|| "-".to_string());
-                    println!("{:<14}  {}  ({})", label, formatted, pace);
-                }
-            }
+    for (field, label, distance_km) in races {
+        if let Some(time) = data.get(field).and_then(|v| v.as_f64()) {
+            let formatted = format_race_time(time);
+            let pace_sec = time / distance_km;
+            let pace = format_pace(pace_sec);
+            println!("{:<16} {:>12} {:>14}", label, formatted, pace);
         }
     }
 

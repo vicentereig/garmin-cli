@@ -615,7 +615,7 @@ mod race_predictions_tests {
         let fixture = include_str!("fixtures/race_predictions.json");
 
         Mock::given(method("GET"))
-            .and(path("/metrics-service/metrics/racepredictions/daily/2025-12-10"))
+            .and(path("/metrics-service/metrics/racepredictions/latest/testuser"))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -623,28 +623,25 @@ mod race_predictions_tests {
         let client = test_client(&mock_server);
         let token = test_token();
 
-        let result: Vec<serde_json::Value> = client
-            .get_json(&token, "/metrics-service/metrics/racepredictions/daily/2025-12-10")
+        let result: serde_json::Value = client
+            .get_json(&token, "/metrics-service/metrics/racepredictions/latest/testuser")
             .await
             .expect("Failed to get race predictions");
 
-        assert_eq!(result.len(), 1);
-        let preds = &result[0]["racePredictions"];
-        assert!(preds.get("5K").is_some());
-        assert!(preds.get("10K").is_some());
-        assert!(preds.get("halfMarathon").is_some());
-        assert!(preds.get("marathon").is_some());
+        // API returns flat structure with time5K, time10K, etc.
+        assert!(result.get("time5K").is_some());
+        assert!(result.get("time10K").is_some());
+        assert!(result.get("timeHalfMarathon").is_some());
+        assert!(result.get("timeMarathon").is_some());
     }
 
     #[tokio::test]
     async fn test_race_prediction_time_formatting() {
-        let fixture: Vec<serde_json::Value> =
+        let fixture: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/race_predictions.json")).unwrap();
 
-        let preds = &fixture[0]["racePredictions"];
-
         // 5K time: 1245 seconds = 20:45
-        let time_5k = preds["5K"]["predictedTime"].as_f64().unwrap();
+        let time_5k = fixture["time5K"].as_f64().unwrap();
         let mins = (time_5k / 60.0).floor() as i64;
         let secs = (time_5k % 60.0) as i64;
         assert_eq!(mins, 20);

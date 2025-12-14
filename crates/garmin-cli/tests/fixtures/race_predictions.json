@@ -1,23 +1,10 @@
-[
-  {
-    "calendarDate": "2025-12-10",
-    "racePredictions": {
-      "5K": {
-        "predictedTime": 1245.0,
-        "predictedPace": 249.0
-      },
-      "10K": {
-        "predictedTime": 2610.0,
-        "predictedPace": 261.0
-      },
-      "halfMarathon": {
-        "predictedTime": 5850.0,
-        "predictedPace": 277.0
-      },
-      "marathon": {
-        "predictedTime": 12420.0,
-        "predictedPace": 295.0
-      }
-    }
-  }
-]
+{
+  "calendarDate": "2025-12-10",
+  "fromCalendarDate": null,
+  "time5K": 1245,
+  "time10K": 2610,
+  "timeHalfMarathon": 5850,
+  "timeMarathon": 12420,
+  "toCalendarDate": null,
+  "userId": 29496888
+}
