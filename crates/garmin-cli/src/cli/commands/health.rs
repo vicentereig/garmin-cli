@@ -1331,21 +1331,21 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
     println!("Race Predictions");
     println!("{}", "-".repeat(30));
 
-    let race_path = format!("/metrics-service/metrics/racepredictions/daily/{}", date);
+    let race_path = format!("/metrics-service/metrics/racepredictions/latest/{}", display_name);
     match client.get_json::<serde_json::Value>(&oauth2, &race_path).await {
         Ok(data) => {
-            let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
-            if let Some(preds) = entry.get("racePredictions") {
-                for (race, label) in [("5K", "5K"), ("10K", "10K"), ("halfMarathon", "Half Marathon"), ("marathon", "Marathon")] {
-                    if let Some(pred) = preds.get(race) {
-                        if let Some(time) = pred.get("predictedTime").and_then(|v| v.as_f64()) {
-                            let formatted = format_race_time(time);
-                            let pace = pred.get("predictedPace").and_then(|v| v.as_f64())
-                                .map(|p| format_pace(p))
-                                .unwrap_or_else(|| "-".to_string());
-                            println!("  {:<16}  {:>10}  ({})", label, formatted, pace);
-                        }
-                    }
+            let races = [
+                ("time5K", "5K", 5.0),
+                ("time10K", "10K", 10.0),
+                ("timeHalfMarathon", "Half Marathon", 21.0975),
+                ("timeMarathon", "Marathon", 42.195),
+            ];
+            for (field, label, distance_km) in races {
+                if let Some(time) = data.get(field).and_then(|v| v.as_f64()) {
+                    let formatted = format_race_time(time);
+                    let pace_sec = time / distance_km;
+                    let pace = format_pace(pace_sec);
+                    println!("  {:<16}  {:>10}  ({})", label, formatted, pace);
                 }
             }
         }
@@ -1361,16 +1361,20 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 
     let pr_path = format!("/personalrecord-service/personalrecord/prs/{}", display_name);
     if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &pr_path).await {
-        if let Some(records) = data.get("personalRecords").and_then(|v| v.as_array()) {
+        // Time-based record type IDs: 3=5K, 4=10K, 5=HM, 6=Marathon
+        let time_types = [3_i64, 4, 5, 6];
+        let type_names: std::collections::HashMap<i64, &str> = [
+            (3, "5K"), (4, "10K"), (5, "Half Marathon"), (6, "Marathon"),
+        ].into_iter().collect();
+
+        if let Some(records) = data.as_array() {
             let mut shown = 0;
             for record in records {
-                if shown >= 5 { break; }
-                let name = record.get("typeDisplayName").and_then(|v| v.as_str()).unwrap_or("Unknown");
-                let value = record.get("value").and_then(|v| v.as_f64());
-
-                // Only show time-based records
-                if name.contains("Fastest") {
-                    if let Some(v) = value {
+                if shown >= 4 { break; }
+                let type_id = record.get("typeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                if time_types.contains(&type_id) {
+                    if let Some(v) = record.get("value").and_then(|v| v.as_f64()) {
+                        let name = type_names.get(&type_id).unwrap_or(&"Unknown");
                         let formatted = format_race_time(v);
                         println!("  {:<16}  {:>10}", name, formatted);
                         shown += 1;
@@ -1399,32 +1403,52 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
     println!("Personal Records");
-    println!("{}", "-".repeat(60));
+    println!("{}", "-".repeat(70));
 
-    if let Some(records) = data.get("personalRecords").and_then(|v| v.as_array()) {
+    // API returns array directly, typeId maps to record type
+    let type_names: std::collections::HashMap<i64, (&str, &str)> = [
+        (3, ("Fastest 5K", "time")),
+        (4, ("Fastest 10K", "time")),
+        (5, ("Fastest Half Marathon", "time")),
+        (6, ("Fastest Marathon", "time")),
+        (7, ("Longest Run", "distance")),
+        (8, ("Longest Ride", "distance")),
+        (9, ("Longest Ride Time", "time")),
+        (11, ("Max Elevation Gain", "elevation")),
+        (12, ("Most Steps (Day)", "steps")),
+        (13, ("Most Steps (Week)", "steps")),
+        (14, ("Most Steps (Month)", "steps")),
+        (17, ("Longest Swim", "distance_m")),
+        (18, ("Fastest 100m Swim", "time")),
+    ].into_iter().collect();
+
+    if let Some(records) = data.as_array() {
         if records.is_empty() {
             println!("No personal records found");
             return Ok(());
         }
 
         for record in records {
-            let name = record.get("typeDisplayName").and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let type_id = record.get("typeId").and_then(|v| v.as_i64()).unwrap_or(0);
             let value = record.get("value").and_then(|v| v.as_f64());
-            let date = record.get("activityStartDateTimeGMT").and_then(|v| v.as_str())
+            let activity_name = record.get("activityName").and_then(|v| v.as_str());
+            let date = record.get("actStartDateTimeInGMTFormatted").and_then(|v| v.as_str())
                 .map(|d| d.split('T').next().unwrap_or(d))
                 .unwrap_or("-");
 
-            let formatted_value = match name {
-                n if n.contains("Fastest") || n.contains("Time") => {
-                    value.map(|v| format_race_time(v)).unwrap_or("-".to_string())
-                }
-                n if n.contains("Longest") || n.contains("Distance") => {
-                    value.map(|v| format!("{:.2} km", v / 1000.0)).unwrap_or("-".to_string())
-                }
-                _ => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string())
-            };
+            if let Some((name, format_type)) = type_names.get(&type_id) {
+                let formatted_value = match *format_type {
+                    "time" => value.map(|v| format_race_time(v)).unwrap_or("-".to_string()),
+                    "distance" => value.map(|v| format!("{:.2} km", v / 1000.0)).unwrap_or("-".to_string()),
+                    "distance_m" => value.map(|v| format!("{:.0} m", v)).unwrap_or("-".to_string()),
+                    "elevation" => value.map(|v| format!("{:.0} m", v)).unwrap_or("-".to_string()),
+                    "steps" => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string()),
+                    _ => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string())
+                };
 
-            println!("{:<25} {:>15}  {}", name, formatted_value, date);
+                let activity = activity_name.unwrap_or("-");
+                println!("{:<22} {:>12}  {}  {}", name, formatted_value, date, activity);
+            }
         }
     }
 

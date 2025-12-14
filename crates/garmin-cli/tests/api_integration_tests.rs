@@ -947,25 +947,23 @@ mod personal_records_tests {
         let client = test_client(&mock_server);
         let token = test_token();
 
-        let result: serde_json::Value = client
+        let result: Vec<serde_json::Value> = client
             .get_json(&token, "/personalrecord-service/personalrecord/prs/TestUser")
             .await
             .expect("Failed to get personal records");
 
-        let records = result["personalRecords"].as_array().unwrap();
-        assert_eq!(records.len(), 4);
-        assert_eq!(records[0]["typeDisplayName"], "Fastest 5K");
+        // API returns array directly with typeId field
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0]["typeId"], 3); // 3 = Fastest 5K
     }
 
     #[tokio::test]
     async fn test_personal_record_time_formatting() {
-        let fixture: serde_json::Value =
+        let fixture: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("fixtures/personal_records.json")).unwrap();
 
-        let records = fixture["personalRecords"].as_array().unwrap();
-
         // 5K PR: 1198 seconds = 19:58
-        let time_5k = records[0]["value"].as_f64().unwrap();
+        let time_5k = fixture[0]["value"].as_f64().unwrap();
         let mins = (time_5k / 60.0).floor() as i64;
         let secs = (time_5k % 60.0) as i64;
         assert_eq!(mins, 19);
