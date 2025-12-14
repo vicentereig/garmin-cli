@@ -199,6 +199,71 @@ enum HealthCommands {
         #[arg(short, long, default_value = "kg")]
         unit: String,
     },
+    /// Get lactate threshold
+    LactateThreshold {
+        /// Number of days to show (default: 90)
+        #[arg(long, default_value = "90")]
+        days: u32,
+    },
+    /// Get race predictions
+    RacePredictions {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get endurance score
+    EnduranceScore {
+        /// Number of days to show (default: 30)
+        #[arg(long, default_value = "30")]
+        days: u32,
+    },
+    /// Get hill score
+    HillScore {
+        /// Number of days to show (default: 30)
+        #[arg(long, default_value = "30")]
+        days: u32,
+    },
+    /// Get SpO2 (blood oxygen) data
+    Spo2 {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get respiration data
+    Respiration {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get intensity minutes
+    IntensityMinutes {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get blood pressure data
+    BloodPressure {
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Get hydration data
+    Hydration {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Get personal records
+    PersonalRecords,
+    /// Get performance summary (all performance metrics)
+    PerformanceSummary {
+        /// Date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -300,6 +365,39 @@ async fn main() -> garmin_cli::Result<()> {
             }
             HealthCommands::WeightAdd { weight, unit } => {
                 commands::add_weight(weight, &unit, cli.profile).await
+            }
+            HealthCommands::LactateThreshold { days } => {
+                commands::lactate_threshold(Some(days), cli.profile).await
+            }
+            HealthCommands::RacePredictions { date } => {
+                commands::race_predictions(date, cli.profile).await
+            }
+            HealthCommands::EnduranceScore { days } => {
+                commands::endurance_score(Some(days), cli.profile).await
+            }
+            HealthCommands::HillScore { days } => {
+                commands::hill_score(Some(days), cli.profile).await
+            }
+            HealthCommands::Spo2 { date } => {
+                commands::spo2(date, cli.profile).await
+            }
+            HealthCommands::Respiration { date } => {
+                commands::respiration(date, cli.profile).await
+            }
+            HealthCommands::IntensityMinutes { date } => {
+                commands::intensity_minutes(date, cli.profile).await
+            }
+            HealthCommands::BloodPressure { from, to } => {
+                commands::blood_pressure(from, to, cli.profile).await
+            }
+            HealthCommands::Hydration { date } => {
+                commands::hydration(date, cli.profile).await
+            }
+            HealthCommands::PersonalRecords => {
+                commands::personal_records(cli.profile).await
+            }
+            HealthCommands::PerformanceSummary { date } => {
+                commands::performance_summary(date, cli.profile).await
             }
         },
         Commands::Devices { command } => match command {

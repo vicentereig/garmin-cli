@@ -1,0 +1,23 @@
+[
+  {
+    "calendarDate": "2025-12-10",
+    "racePredictions": {
+      "5K": {
+        "predictedTime": 1245.0,
+        "predictedPace": 249.0
+      },
+      "10K": {
+        "predictedTime": 2610.0,
+        "predictedPace": 261.0
+      },
+      "halfMarathon": {
+        "predictedTime": 5850.0,
+        "predictedPace": 277.0
+      },
+      "marathon": {
+        "predictedTime": 12420.0,
+        "predictedPace": 295.0
+      }
+    }
+  }
+]

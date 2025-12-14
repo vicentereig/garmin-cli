@@ -1,0 +1,16 @@
+{
+  "calendarDate": "2025-12-10",
+  "averageSpO2": 96,
+  "lowestSpO2": 91,
+  "latestSpO2": 97,
+  "latestSpO2ReadingTimeGmt": 1733875200000,
+  "spO2HourlyAverages": [
+    {"hour": 0, "value": 95},
+    {"hour": 1, "value": 94},
+    {"hour": 2, "value": 93},
+    {"hour": 3, "value": 94},
+    {"hour": 4, "value": 95},
+    {"hour": 5, "value": 96},
+    {"hour": 6, "value": 97}
+  ]
+}

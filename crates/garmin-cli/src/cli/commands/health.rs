@@ -759,3 +759,671 @@ fn print_sleep_summary(data: &serde_json::Value) {
     }
 }
 
+/// Get lactate threshold data
+pub async fn lactate_threshold(days: Option<u32>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let num_days = days.unwrap_or(90);
+    let start_date = today - Duration::days(num_days as i64 - 1);
+
+    // Fetch lactate threshold heart rate history
+    let hr_path = format!(
+        "/biometric-service/stats/lactateThresholdHeartRate/range/{}/{}?sport=RUNNING&aggregation=daily&aggregationStrategy=LATEST",
+        start_date.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
+    );
+
+    // Fetch lactate threshold speed history
+    let speed_path = format!(
+        "/biometric-service/stats/lactateThresholdSpeed/range/{}/{}?sport=RUNNING&aggregation=daily&aggregationStrategy=LATEST",
+        start_date.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
+    );
+
+    let hr_data: serde_json::Value = client.get_json(&oauth2, &hr_path).await.unwrap_or(serde_json::Value::Null);
+    let speed_data: serde_json::Value = client.get_json(&oauth2, &speed_path).await.unwrap_or(serde_json::Value::Null);
+
+    println!("Lactate Threshold History ({} days)", num_days);
+    println!("{}", "-".repeat(50));
+
+    // Combine HR and speed data by date
+    // API returns: {"from": "date", "value": number}
+    let mut entries: std::collections::BTreeMap<String, (Option<i64>, Option<f64>)> = std::collections::BTreeMap::new();
+
+    if let Some(arr) = hr_data.as_array() {
+        for entry in arr {
+            if let Some(date) = entry.get("from").and_then(|v| v.as_str()) {
+                let hr = entry.get("value").and_then(|v| v.as_f64()).map(|v| v as i64);
+                entries.entry(date.to_string()).or_insert((None, None)).0 = hr;
+            }
+        }
+    }
+
+    if let Some(arr) = speed_data.as_array() {
+        for entry in arr {
+            if let Some(date) = entry.get("from").and_then(|v| v.as_str()) {
+                // Speed value needs conversion: pace_sec_per_km = 100 / value
+                let speed = entry.get("value").and_then(|v| v.as_f64());
+                entries.entry(date.to_string()).or_insert((None, None)).1 = speed;
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        println!("No lactate threshold data found");
+        println!();
+        println!("Tip: Lactate threshold is estimated from:");
+        println!("  - Guided lactate threshold test");
+        println!("  - Running activities with heart rate");
+        return Ok(());
+    }
+
+    println!("{:<12} {:>8} {:>10}", "Date", "HR (bpm)", "Pace");
+    println!("{}", "-".repeat(35));
+
+    for (date, (hr, speed)) in entries.iter().rev() {
+        let hr_str = hr.map(|h| format!("{}", h)).unwrap_or("-".to_string());
+        let pace_str = speed.map(|s| {
+            // Convert: value is stored as speed factor, pace = 100/value sec/km
+            let pace_sec_per_km = 100.0 / s;
+            let pace_min = (pace_sec_per_km / 60.0).floor() as i64;
+            let pace_sec = (pace_sec_per_km % 60.0) as i64;
+            format!("{}:{:02}/km", pace_min, pace_sec)
+        }).unwrap_or("-".to_string());
+
+        println!("{:<12} {:>8} {:>10}", date, hr_str, pace_str);
+    }
+
+    Ok(())
+}
+
+/// Get race predictions
+pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/metrics-service/metrics/racepredictions/daily/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Race Predictions for {}", date);
+    println!("{}", "-".repeat(40));
+
+    let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+
+    if let Some(preds) = entry.get("racePredictions") {
+        for (race, label) in [("5K", "5K"), ("10K", "10K"), ("halfMarathon", "Half Marathon"), ("marathon", "Marathon")] {
+            if let Some(pred) = preds.get(race) {
+                if let Some(time) = pred.get("predictedTime").and_then(|v| v.as_f64()) {
+                    let formatted = format_race_time(time);
+                    let pace = pred.get("predictedPace").and_then(|v| v.as_f64())
+                        .map(|p| format_pace(p))
+                        .unwrap_or_else(|| "-".to_string());
+                    println!("{:<14}  {}  ({})", label, formatted, pace);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn format_race_time(seconds: f64) -> String {
+    let total_secs = seconds as i64;
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
+    if hours > 0 {
+        format!("{}:{:02}:{:02}", hours, mins, secs)
+    } else {
+        format!("{}:{:02}", mins, secs)
+    }
+}
+
+fn format_pace(sec_per_km: f64) -> String {
+    let mins = (sec_per_km / 60.0).floor() as i64;
+    let secs = (sec_per_km % 60.0) as i64;
+    format!("{}:{:02}/km", mins, secs)
+}
+
+/// Get endurance score
+pub async fn endurance_score(days: Option<u32>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let num_days = days.unwrap_or(30);
+    let start_date = today - Duration::days(num_days as i64 - 1);
+
+    let path = format!(
+        "/metrics-service/metrics/endurancescore?startDate={}&endDate={}&aggregation=daily",
+        start_date.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
+    );
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Endurance Score");
+    println!("{}", "-".repeat(50));
+
+    if let Some(arr) = data.as_array() {
+        if arr.is_empty() {
+            println!("No endurance score data available");
+            return Ok(());
+        }
+
+        println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", "Date", "Score", "Class", "VO2", "Train", "Activity");
+        println!("{}", "-".repeat(50));
+
+        for entry in arr.iter().rev().take(10) {
+            let date = entry.get("calendarDate").and_then(|v| v.as_str()).unwrap_or("-");
+            let score = entry.get("overallScore").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let class = entry.get("classification").and_then(|v| v.as_str()).unwrap_or("-");
+            let vo2 = entry.get("vo2MaxFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let train = entry.get("trainingHistoryFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let activity = entry.get("activityHistoryFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+
+            println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", date, score, class, vo2, train, activity);
+        }
+    }
+
+    Ok(())
+}
+
+/// Get hill score
+pub async fn hill_score(days: Option<u32>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let num_days = days.unwrap_or(30);
+    let start_date = today - Duration::days(num_days as i64 - 1);
+
+    let path = format!(
+        "/metrics-service/metrics/hillscore?startDate={}&endDate={}&aggregation=daily",
+        start_date.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
+    );
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Hill Score");
+    println!("{}", "-".repeat(50));
+
+    if let Some(arr) = data.as_array() {
+        if arr.is_empty() {
+            println!("No hill score data available");
+            return Ok(());
+        }
+
+        println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", "Date", "Score", "Class", "Str", "End", "Pwr");
+        println!("{}", "-".repeat(50));
+
+        for entry in arr.iter().rev().take(10) {
+            let date = entry.get("calendarDate").and_then(|v| v.as_str()).unwrap_or("-");
+            let score = entry.get("overallScore").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let class = entry.get("classification").and_then(|v| v.as_str()).unwrap_or("-");
+            let strength = entry.get("strengthFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let endurance = entry.get("enduranceFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let power = entry.get("powerFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+
+            println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", date, score, class, strength, endurance, power);
+        }
+    }
+
+    Ok(())
+}
+
+/// Get SpO2 (blood oxygen) data
+pub async fn spo2(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/wellness-service/wellness/daily/spo2/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("SpO2 (Blood Oxygen) for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(avg) = data.get("averageSpO2").and_then(|v| v.as_i64()) {
+        println!("Average:     {}%", avg);
+    }
+
+    if let Some(low) = data.get("lowestSpO2").and_then(|v| v.as_i64()) {
+        println!("Lowest:      {}%", low);
+    }
+
+    if let Some(latest) = data.get("latestSpO2").and_then(|v| v.as_i64()) {
+        println!("Latest:      {}%", latest);
+    }
+
+    Ok(())
+}
+
+/// Get respiration data
+pub async fn respiration(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/wellness-service/wellness/daily/respiration/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Respiration for {}", date);
+    println!("{}", "-".repeat(40));
+
+    if let Some(waking) = data.get("avgWakingRespirationValue").and_then(|v| v.as_f64()) {
+        println!("Avg Waking:  {:.1} brpm", waking);
+    }
+
+    if let Some(sleep) = data.get("avgSleepRespirationValue").and_then(|v| v.as_f64()) {
+        println!("Avg Sleep:   {:.1} brpm", sleep);
+    }
+
+    if let Some(high) = data.get("highestRespirationValue").and_then(|v| v.as_f64()) {
+        println!("Highest:     {:.1} brpm", high);
+    }
+
+    if let Some(low) = data.get("lowestRespirationValue").and_then(|v| v.as_f64()) {
+        println!("Lowest:      {:.1} brpm", low);
+    }
+
+    Ok(())
+}
+
+/// Get intensity minutes
+pub async fn intensity_minutes(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/wellness-service/wellness/daily/im/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Intensity Minutes for {}", date);
+    println!("{}", "-".repeat(40));
+
+    let moderate = data.get("moderateIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
+    let vigorous = data.get("vigorousIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
+    let total = data.get("totalIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
+    let goal = data.get("weeklyGoal").and_then(|v| v.as_i64()).unwrap_or(150);
+
+    println!("Moderate:    {} min", moderate);
+    println!("Vigorous:    {} min (x2 = {})", vigorous, vigorous * 2);
+    println!("Total:       {} min", total);
+    println!("Weekly Goal: {} min", goal);
+
+    let pct = (total as f64 / goal as f64 * 100.0) as i64;
+    println!("Progress:    {}%", pct);
+
+    Ok(())
+}
+
+/// Get blood pressure data
+pub async fn blood_pressure(from: Option<String>, to: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let end_date = to.unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
+    let start_date = from.unwrap_or_else(|| (today - Duration::days(30)).format("%Y-%m-%d").to_string());
+
+    let path = format!("/bloodpressure-service/bloodpressure/range/{}/{}", start_date, end_date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Blood Pressure ({} to {})", start_date, end_date);
+    println!("{}", "-".repeat(50));
+
+    if let Some(measurements) = data.get("measurementSummaries").and_then(|v| v.as_array()) {
+        if measurements.is_empty() {
+            println!("No blood pressure measurements found");
+            return Ok(());
+        }
+
+        println!("{:<20} {:>8} {:>8} {:>6}", "Date/Time", "Systolic", "Diastolic", "Pulse");
+        println!("{}", "-".repeat(50));
+
+        for entry in measurements {
+            let timestamp = entry.get("measurementTimestampLocal").and_then(|v| v.as_i64());
+            let dt = timestamp.and_then(|t| chrono::DateTime::from_timestamp_millis(t))
+                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "-".to_string());
+
+            let systolic = entry.get("systolic").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let diastolic = entry.get("diastolic").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let pulse = entry.get("pulse").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+
+            let classification = classify_bp(
+                entry.get("systolic").and_then(|v| v.as_i64()),
+                entry.get("diastolic").and_then(|v| v.as_i64())
+            );
+
+            println!("{:<20} {:>8} {:>8} {:>6}  {}", dt, systolic, diastolic, pulse, classification);
+        }
+    }
+
+    Ok(())
+}
+
+fn classify_bp(systolic: Option<i64>, diastolic: Option<i64>) -> &'static str {
+    match (systolic, diastolic) {
+        (Some(s), Some(d)) => {
+            if s < 120 && d < 80 { "Normal" }
+            else if s < 130 && d < 80 { "Elevated" }
+            else if s < 140 || d < 90 { "High Stage 1" }
+            else if s >= 140 || d >= 90 { "High Stage 2" }
+            else { "Unknown" }
+        }
+        _ => "Unknown"
+    }
+}
+
+/// Get hydration data
+pub async fn hydration(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+
+    let path = format!("/usersummary-service/usersummary/hydration/daily/{}", date);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Hydration for {}", date);
+    println!("{}", "-".repeat(40));
+
+    let value = data.get("valueInML").and_then(|v| v.as_i64()).unwrap_or(0);
+    let goal = data.get("goalInML").and_then(|v| v.as_i64()).unwrap_or(2500);
+
+    println!("Intake:      {} ml ({:.1} L)", value, value as f64 / 1000.0);
+    println!("Goal:        {} ml ({:.1} L)", goal, goal as f64 / 1000.0);
+
+    let pct = (value as f64 / goal as f64 * 100.0) as i64;
+    println!("Progress:    {}%", pct);
+
+    if let Some(sweat) = data.get("sweatLossInML").and_then(|v| v.as_i64()) {
+        println!("Sweat Loss:  {} ml", sweat);
+    }
+
+    if let Some(activity) = data.get("activityIntakeInML").and_then(|v| v.as_i64()) {
+        println!("Activity:    {} ml", activity);
+    }
+
+    Ok(())
+}
+
+/// Get performance summary - all key performance metrics at once
+pub async fn performance_summary(date: Option<String>, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let date = resolve_date(date)?;
+    let client = GarminClient::new(&oauth1.domain);
+    let display_name = get_display_name(&client, &oauth2).await?;
+
+    println!("Performance Summary for {}", date);
+    println!("{}", "=".repeat(50));
+
+    // VO2 Max
+    let vo2_path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &vo2_path).await {
+        if let Some(arr) = data.as_array() {
+            if let Some(entry) = arr.first() {
+                if let Some(generic) = entry.get("generic") {
+                    if let Some(vo2) = generic.get("vo2MaxPreciseValue").and_then(|v| v.as_f64()) {
+                        println!("VO2 Max:             {:.1} ml/kg/min", vo2);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fitness Age
+    let fitness_path = format!("/fitnessage-service/fitnessage/{}", date);
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &fitness_path).await {
+        let fitness_age = data.get("fitnessAge").and_then(|v| v.as_f64());
+        let chrono_age = data.get("chronologicalAge").and_then(|v| v.as_f64());
+        if let (Some(fa), Some(ca)) = (fitness_age, chrono_age) {
+            println!("Fitness Age:         {:.0} years (actual: {:.0})", fa, ca);
+        }
+    }
+
+    // Training Status
+    let status_path = format!("/metrics-service/metrics/trainingstatus/aggregated/{}", date);
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &status_path).await {
+        let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+        if let Some(status) = entry.get("trainingStatusPhrase").and_then(|v| v.as_str()) {
+            println!("Training Status:     {}", status);
+        }
+        if let Some(load) = entry.get("weeklyTrainingLoad").and_then(|v| v.as_f64()) {
+            let load_status = entry.get("loadStatus").and_then(|v| v.as_str()).unwrap_or("");
+            println!("Training Load:       {:.0} ({})", load, load_status);
+        }
+    }
+
+    // Training Readiness
+    let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &readiness_path).await {
+        let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+        if let Some(score) = entry.get("score").and_then(|v| v.as_i64()) {
+            let level = entry.get("level").and_then(|v| v.as_str()).unwrap_or("");
+            println!("Training Readiness:  {} ({})", score, level);
+        }
+    }
+
+    println!();
+    println!("Lactate Threshold");
+    println!("{}", "-".repeat(30));
+
+    // Get most recent LT data (search back 90 days)
+    let today = chrono::Local::now().date_naive();
+    let start = today - Duration::days(90);
+    let lt_hr_range_path = format!(
+        "/biometric-service/stats/lactateThresholdHeartRate/range/{}/{}?sport=RUNNING&aggregation=daily&aggregationStrategy=LATEST",
+        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+    );
+    let lt_speed_range_path = format!(
+        "/biometric-service/stats/lactateThresholdSpeed/range/{}/{}?sport=RUNNING&aggregation=daily&aggregationStrategy=LATEST",
+        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+    );
+
+    let mut lt_hr: Option<i64> = None;
+    let mut lt_pace: Option<String> = None;
+    let mut lt_date: Option<String> = None;
+
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &lt_hr_range_path).await {
+        if let Some(arr) = data.as_array() {
+            if let Some(last) = arr.last() {
+                lt_hr = last.get("value").and_then(|v| v.as_f64()).map(|v| v as i64);
+                lt_date = last.get("from").and_then(|v| v.as_str()).map(|s| s.to_string());
+            }
+        }
+    }
+
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &lt_speed_range_path).await {
+        if let Some(arr) = data.as_array() {
+            if let Some(last) = arr.last() {
+                if let Some(speed) = last.get("value").and_then(|v| v.as_f64()) {
+                    let pace_sec_per_km = 100.0 / speed;
+                    let pace_min = (pace_sec_per_km / 60.0).floor() as i64;
+                    let pace_sec = (pace_sec_per_km % 60.0) as i64;
+                    lt_pace = Some(format!("{}:{:02}/km", pace_min, pace_sec));
+                }
+            }
+        }
+    }
+
+    if let Some(hr) = lt_hr {
+        println!("  Heart Rate:        {} bpm", hr);
+    }
+    if let Some(pace) = lt_pace {
+        println!("  Pace:              {}", pace);
+    }
+    if let Some(d) = lt_date {
+        println!("  Last Updated:      {}", d);
+    }
+
+    // Endurance & Hill Scores
+    println!();
+    println!("Scores");
+    println!("{}", "-".repeat(30));
+
+    let end_path = format!(
+        "/metrics-service/metrics/endurancescore?startDate={}&endDate={}&aggregation=daily",
+        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+    );
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &end_path).await {
+        if let Some(arr) = data.as_array() {
+            if let Some(last) = arr.last() {
+                let score = last.get("overallScore").and_then(|v| v.as_i64());
+                let class = last.get("classification").and_then(|v| v.as_str());
+                if let (Some(s), Some(c)) = (score, class) {
+                    println!("  Endurance:         {} ({})", s, c);
+                }
+            }
+        }
+    }
+
+    let hill_path = format!(
+        "/metrics-service/metrics/hillscore?startDate={}&endDate={}&aggregation=daily",
+        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+    );
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &hill_path).await {
+        if let Some(arr) = data.as_array() {
+            if let Some(last) = arr.last() {
+                let score = last.get("overallScore").and_then(|v| v.as_i64());
+                let class = last.get("classification").and_then(|v| v.as_str());
+                if let (Some(s), Some(c)) = (score, class) {
+                    println!("  Hill:              {} ({})", s, c);
+                }
+            }
+        }
+    }
+
+    // Race Predictions
+    println!();
+    println!("Race Predictions");
+    println!("{}", "-".repeat(30));
+
+    let race_path = format!("/metrics-service/metrics/racepredictions/daily/{}", date);
+    match client.get_json::<serde_json::Value>(&oauth2, &race_path).await {
+        Ok(data) => {
+            let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+            if let Some(preds) = entry.get("racePredictions") {
+                for (race, label) in [("5K", "5K"), ("10K", "10K"), ("halfMarathon", "Half Marathon"), ("marathon", "Marathon")] {
+                    if let Some(pred) = preds.get(race) {
+                        if let Some(time) = pred.get("predictedTime").and_then(|v| v.as_f64()) {
+                            let formatted = format_race_time(time);
+                            let pace = pred.get("predictedPace").and_then(|v| v.as_f64())
+                                .map(|p| format_pace(p))
+                                .unwrap_or_else(|| "-".to_string());
+                            println!("  {:<16}  {:>10}  ({})", label, formatted, pace);
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            println!("  (Race predictions not available)");
+        }
+    }
+
+    // Personal Records summary
+    println!();
+    println!("Personal Records");
+    println!("{}", "-".repeat(30));
+
+    let pr_path = format!("/personalrecord-service/personalrecord/prs/{}", display_name);
+    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &pr_path).await {
+        if let Some(records) = data.get("personalRecords").and_then(|v| v.as_array()) {
+            let mut shown = 0;
+            for record in records {
+                if shown >= 5 { break; }
+                let name = record.get("typeDisplayName").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                let value = record.get("value").and_then(|v| v.as_f64());
+
+                // Only show time-based records
+                if name.contains("Fastest") {
+                    if let Some(v) = value {
+                        let formatted = format_race_time(v);
+                        println!("  {:<16}  {:>10}", name, formatted);
+                        shown += 1;
+                    }
+                }
+            }
+            if shown == 0 {
+                println!("  (No records found)");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get personal records
+pub async fn personal_records(profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let display_name = get_display_name(&client, &oauth2).await?;
+
+    let path = format!("/personalrecord-service/personalrecord/prs/{}", display_name);
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("Personal Records");
+    println!("{}", "-".repeat(60));
+
+    if let Some(records) = data.get("personalRecords").and_then(|v| v.as_array()) {
+        if records.is_empty() {
+            println!("No personal records found");
+            return Ok(());
+        }
+
+        for record in records {
+            let name = record.get("typeDisplayName").and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let value = record.get("value").and_then(|v| v.as_f64());
+            let date = record.get("activityStartDateTimeGMT").and_then(|v| v.as_str())
+                .map(|d| d.split('T').next().unwrap_or(d))
+                .unwrap_or("-");
+
+            let formatted_value = match name {
+                n if n.contains("Fastest") || n.contains("Time") => {
+                    value.map(|v| format_race_time(v)).unwrap_or("-".to_string())
+                }
+                n if n.contains("Longest") || n.contains("Distance") => {
+                    value.map(|v| format!("{:.2} km", v / 1000.0)).unwrap_or("-".to_string())
+                }
+                _ => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string())
+            };
+
+            println!("{:<25} {:>15}  {}", name, formatted_value, date);
+        }
+    }
+
+    Ok(())
+}
+

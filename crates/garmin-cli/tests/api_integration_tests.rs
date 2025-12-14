@@ -562,6 +562,420 @@ mod fitness_age_tests {
     }
 }
 
+mod lactate_threshold_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_lactate_threshold() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/lactate_threshold.json");
+
+        Mock::given(method("GET"))
+            .and(path("/biometric-service/biometric/latestLactateThreshold"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/biometric-service/biometric/latestLactateThreshold")
+            .await
+            .expect("Failed to get lactate threshold");
+
+        assert_eq!(result["lactateThresholdHeartRate"].as_i64().unwrap(), 168);
+        assert_eq!(result["lactateThresholdSpeed"].as_f64().unwrap(), 3.85);
+        assert_eq!(result["functionalThresholdPower"].as_i64().unwrap(), 280);
+    }
+
+    #[tokio::test]
+    async fn test_lactate_threshold_pace_calculation() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/lactate_threshold.json")).unwrap();
+
+        // Speed is in m/s, convert to min/km pace
+        let speed_ms = fixture["lactateThresholdSpeed"].as_f64().unwrap();
+        let pace_sec_per_km = 1000.0 / speed_ms;
+        let pace_min = (pace_sec_per_km / 60.0).floor() as i64;
+        let pace_sec = (pace_sec_per_km % 60.0) as i64;
+
+        // 3.85 m/s = ~4:20/km
+        assert_eq!(pace_min, 4);
+        assert!(pace_sec >= 19 && pace_sec <= 21);
+    }
+}
+
+mod race_predictions_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_race_predictions() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/race_predictions.json");
+
+        Mock::given(method("GET"))
+            .and(path("/metrics-service/metrics/racepredictions/daily/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: Vec<serde_json::Value> = client
+            .get_json(&token, "/metrics-service/metrics/racepredictions/daily/2025-12-10")
+            .await
+            .expect("Failed to get race predictions");
+
+        assert_eq!(result.len(), 1);
+        let preds = &result[0]["racePredictions"];
+        assert!(preds.get("5K").is_some());
+        assert!(preds.get("10K").is_some());
+        assert!(preds.get("halfMarathon").is_some());
+        assert!(preds.get("marathon").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_race_prediction_time_formatting() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/race_predictions.json")).unwrap();
+
+        let preds = &fixture[0]["racePredictions"];
+
+        // 5K time: 1245 seconds = 20:45
+        let time_5k = preds["5K"]["predictedTime"].as_f64().unwrap();
+        let mins = (time_5k / 60.0).floor() as i64;
+        let secs = (time_5k % 60.0) as i64;
+        assert_eq!(mins, 20);
+        assert_eq!(secs, 45);
+    }
+}
+
+mod endurance_score_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_endurance_score() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/endurance_score.json");
+
+        Mock::given(method("GET"))
+            .and(path("/metrics-service/metrics/endurancescore"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: Vec<serde_json::Value> = client
+            .get_json(&token, "/metrics-service/metrics/endurancescore?startDate=2025-12-01&endDate=2025-12-10&aggregation=daily")
+            .await
+            .expect("Failed to get endurance score");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["overallScore"].as_i64().unwrap(), 72);
+        assert_eq!(result[0]["classification"], "GOOD");
+    }
+
+    #[tokio::test]
+    async fn test_endurance_score_factors() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/endurance_score.json")).unwrap();
+
+        let entry = &fixture[0];
+        assert_eq!(entry["vo2MaxFactor"].as_i64().unwrap(), 85);
+        assert_eq!(entry["trainingHistoryFactor"].as_i64().unwrap(), 68);
+        assert_eq!(entry["activityHistoryFactor"].as_i64().unwrap(), 70);
+    }
+}
+
+mod hill_score_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_hill_score() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/hill_score.json");
+
+        Mock::given(method("GET"))
+            .and(path("/metrics-service/metrics/hillscore"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: Vec<serde_json::Value> = client
+            .get_json(&token, "/metrics-service/metrics/hillscore?startDate=2025-12-01&endDate=2025-12-10&aggregation=daily")
+            .await
+            .expect("Failed to get hill score");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["overallScore"].as_i64().unwrap(), 58);
+        assert_eq!(result[0]["classification"], "FAIR");
+    }
+
+    #[tokio::test]
+    async fn test_hill_score_factors() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/hill_score.json")).unwrap();
+
+        let entry = &fixture[0];
+        assert_eq!(entry["strengthFactor"].as_i64().unwrap(), 62);
+        assert_eq!(entry["enduranceFactor"].as_i64().unwrap(), 55);
+        assert_eq!(entry["powerFactor"].as_i64().unwrap(), 58);
+    }
+}
+
+mod spo2_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_spo2() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/spo2.json");
+
+        Mock::given(method("GET"))
+            .and(path("/wellness-service/wellness/daily/spo2/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/wellness-service/wellness/daily/spo2/2025-12-10")
+            .await
+            .expect("Failed to get SpO2 data");
+
+        assert_eq!(result["averageSpO2"].as_i64().unwrap(), 96);
+        assert_eq!(result["lowestSpO2"].as_i64().unwrap(), 91);
+        assert_eq!(result["latestSpO2"].as_i64().unwrap(), 97);
+    }
+
+    #[tokio::test]
+    async fn test_spo2_hourly_averages() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/spo2.json")).unwrap();
+
+        let hourly = fixture["spO2HourlyAverages"].as_array().unwrap();
+        assert!(!hourly.is_empty());
+        assert!(hourly[0].get("hour").is_some());
+        assert!(hourly[0].get("value").is_some());
+    }
+}
+
+mod respiration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_respiration() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/respiration.json");
+
+        Mock::given(method("GET"))
+            .and(path("/wellness-service/wellness/daily/respiration/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/wellness-service/wellness/daily/respiration/2025-12-10")
+            .await
+            .expect("Failed to get respiration data");
+
+        assert_eq!(result["avgWakingRespirationValue"].as_f64().unwrap(), 15.5);
+        assert_eq!(result["avgSleepRespirationValue"].as_f64().unwrap(), 13.2);
+    }
+
+    #[tokio::test]
+    async fn test_respiration_range() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/respiration.json")).unwrap();
+
+        let high = fixture["highestRespirationValue"].as_f64().unwrap();
+        let low = fixture["lowestRespirationValue"].as_f64().unwrap();
+
+        assert_eq!(high, 22.0);
+        assert_eq!(low, 11.0);
+        assert!(high > low);
+    }
+}
+
+mod intensity_minutes_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_intensity_minutes() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/intensity_minutes.json");
+
+        Mock::given(method("GET"))
+            .and(path("/wellness-service/wellness/daily/im/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/wellness-service/wellness/daily/im/2025-12-10")
+            .await
+            .expect("Failed to get intensity minutes");
+
+        assert_eq!(result["weeklyGoal"].as_i64().unwrap(), 150);
+        assert_eq!(result["totalIntensityMinutes"].as_i64().unwrap(), 105);
+    }
+
+    #[tokio::test]
+    async fn test_intensity_minutes_calculation() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/intensity_minutes.json")).unwrap();
+
+        let moderate = fixture["moderateIntensityMinutes"].as_i64().unwrap();
+        let vigorous = fixture["vigorousIntensityMinutes"].as_i64().unwrap();
+        let total = fixture["totalIntensityMinutes"].as_i64().unwrap();
+
+        // Vigorous counts double
+        assert_eq!(moderate + vigorous * 2, total);
+    }
+}
+
+mod blood_pressure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_blood_pressure() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/blood_pressure.json");
+
+        Mock::given(method("GET"))
+            .and(path("/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10")
+            .await
+            .expect("Failed to get blood pressure");
+
+        let measurements = result["measurementSummaries"].as_array().unwrap();
+        assert_eq!(measurements.len(), 2);
+        assert_eq!(measurements[0]["systolic"].as_i64().unwrap(), 118);
+        assert_eq!(measurements[0]["diastolic"].as_i64().unwrap(), 75);
+    }
+
+    #[tokio::test]
+    async fn test_blood_pressure_classification() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/blood_pressure.json")).unwrap();
+
+        let measurements = fixture["measurementSummaries"].as_array().unwrap();
+        let entry = &measurements[0];
+
+        let systolic = entry["systolic"].as_i64().unwrap();
+        let diastolic = entry["diastolic"].as_i64().unwrap();
+
+        // Normal: < 120 systolic AND < 80 diastolic
+        assert!(systolic < 120);
+        assert!(diastolic < 80);
+    }
+}
+
+mod hydration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_hydration() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/hydration.json");
+
+        Mock::given(method("GET"))
+            .and(path("/usersummary-service/usersummary/hydration/daily/2025-12-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/usersummary-service/usersummary/hydration/daily/2025-12-10")
+            .await
+            .expect("Failed to get hydration data");
+
+        assert_eq!(result["valueInML"].as_i64().unwrap(), 2400);
+        assert_eq!(result["goalInML"].as_i64().unwrap(), 2500);
+    }
+
+    #[tokio::test]
+    async fn test_hydration_percentage() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/hydration.json")).unwrap();
+
+        let value = fixture["valueInML"].as_i64().unwrap() as f64;
+        let goal = fixture["goalInML"].as_i64().unwrap() as f64;
+        let pct = (value / goal * 100.0) as i64;
+
+        assert_eq!(pct, 96);
+    }
+}
+
+mod personal_records_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_personal_records() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/personal_records.json");
+
+        Mock::given(method("GET"))
+            .and(path("/personalrecord-service/personalrecord/prs/TestUser"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(&token, "/personalrecord-service/personalrecord/prs/TestUser")
+            .await
+            .expect("Failed to get personal records");
+
+        let records = result["personalRecords"].as_array().unwrap();
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[0]["typeDisplayName"], "Fastest 5K");
+    }
+
+    #[tokio::test]
+    async fn test_personal_record_time_formatting() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/personal_records.json")).unwrap();
+
+        let records = fixture["personalRecords"].as_array().unwrap();
+
+        // 5K PR: 1198 seconds = 19:58
+        let time_5k = records[0]["value"].as_f64().unwrap();
+        let mins = (time_5k / 60.0).floor() as i64;
+        let secs = (time_5k % 60.0) as i64;
+        assert_eq!(mins, 19);
+        assert_eq!(secs, 58);
+    }
+}
+
 mod error_handling_tests {
     use super::*;
 

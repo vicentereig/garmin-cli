@@ -1,0 +1,22 @@
+{
+  "measurementSummaries": [
+    {
+      "measurementTimestampGMT": 1733875200000,
+      "measurementTimestampLocal": 1733878800000,
+      "systolic": 118,
+      "diastolic": 75,
+      "pulse": 62,
+      "sourceType": "MANUAL"
+    },
+    {
+      "measurementTimestampGMT": 1733788800000,
+      "measurementTimestampLocal": 1733792400000,
+      "systolic": 122,
+      "diastolic": 78,
+      "pulse": 65,
+      "sourceType": "MANUAL"
+    }
+  ],
+  "startTimestampGMT": 1733184000000,
+  "endTimestampGMT": 1733875200000
+}

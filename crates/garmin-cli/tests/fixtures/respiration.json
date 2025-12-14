@@ -1,0 +1,12 @@
+{
+  "calendarDate": "2025-12-10",
+  "avgWakingRespirationValue": 15.5,
+  "highestRespirationValue": 22.0,
+  "lowestRespirationValue": 11.0,
+  "avgSleepRespirationValue": 13.2,
+  "respirationValuesArray": [
+    [1733788800000, 14.5],
+    [1733789700000, 15.0],
+    [1733790600000, 15.2]
+  ]
+}

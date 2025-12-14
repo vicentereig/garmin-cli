@@ -1,0 +1,9 @@
+{
+  "lactateThresholdHeartRate": 168,
+  "lactateThresholdHeartRateSource": "AUTO",
+  "lactateThresholdSpeed": 3.85,
+  "lactateThresholdSpeedSource": "AUTO",
+  "functionalThresholdPower": 280,
+  "functionalThresholdPowerSource": "AUTO",
+  "calendarDate": "2025-12-10"
+}

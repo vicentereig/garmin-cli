@@ -1,0 +1,10 @@
+[
+  {
+    "calendarDate": "2025-12-10",
+    "overallScore": 72,
+    "classification": "GOOD",
+    "vo2MaxFactor": 85,
+    "trainingHistoryFactor": 68,
+    "activityHistoryFactor": 70
+  }
+]
