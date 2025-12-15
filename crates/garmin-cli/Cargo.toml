@@ -35,6 +35,10 @@ dirs.workspace = true
 tabled.workspace = true
 comfy-table.workspace = true
 
+# TUI
+ratatui.workspace = true
+crossterm.workspace = true
+
 # Utilities
 thiserror.workspace = true
 chrono.workspace = true
@@ -48,6 +52,17 @@ rand.workspace = true
 percent-encoding.workspace = true
 urlencoding.workspace = true
 rpassword.workspace = true
+
+# Database
+duckdb.workspace = true
+
+# Spatial/GIS
+gpx.workspace = true
+geo.workspace = true
+wkt.workspace = true
+
+# Embeddings
+fastembed.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

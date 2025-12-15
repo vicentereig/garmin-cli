@@ -15,6 +15,12 @@ pub enum GarminError {
     #[error("Rate limited. Please wait before retrying.")]
     RateLimited,
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("API error {status}: {message}")]
+    Api { status: u16, message: String },
+
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -29,6 +35,9 @@ pub enum GarminError {
 
     #[error("Configuration error: {0}")]
     Config(String),
+
+    #[error("Database error: {0}")]
+    Database(String),
 
     #[error("Keyring error: {0}")]
     Keyring(String),

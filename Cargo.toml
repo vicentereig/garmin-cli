@@ -33,6 +33,10 @@ dirs = "5"
 tabled = "0.16"
 comfy-table = "7"
 
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
 # Utilities
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -46,6 +50,17 @@ rand = "0.8"
 percent-encoding = "2"
 urlencoding = "2"
 rpassword = "7"
+
+# Database
+duckdb = { version = "1.1", features = ["bundled"] }
+
+# Spatial/GIS
+gpx = "0.10"
+geo = "0.28"
+wkt = "0.11"
+
+# Embeddings
+fastembed = "4"
 
 # Testing
 wiremock = "0.6"

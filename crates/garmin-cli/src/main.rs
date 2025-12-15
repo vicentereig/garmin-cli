@@ -52,6 +52,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProfileCommands,
     },
+    /// Sync data to local database
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -275,6 +280,12 @@ enum DeviceCommands {
         /// Device ID
         id: String,
     },
+    /// Show device history from synced activities
+    History {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -283,6 +294,55 @@ enum ProfileCommands {
     Show,
     /// Show user settings
     Settings,
+}
+
+#[derive(Subcommand)]
+enum SyncCommands {
+    /// Run sync operation
+    Run {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+        /// Sync activities only
+        #[arg(long)]
+        activities: bool,
+        /// Sync health data only
+        #[arg(long)]
+        health: bool,
+        /// Sync performance metrics only
+        #[arg(long)]
+        performance: bool,
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+        /// Dry run (plan only, don't execute)
+        #[arg(long)]
+        dry_run: bool,
+        /// Use simple text output instead of fancy TUI
+        #[arg(long)]
+        simple: bool,
+    },
+    /// Show sync status
+    Status {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+    },
+    /// Reset failed tasks to pending
+    Reset {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+    },
+    /// Clear all pending tasks
+    Clear {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -407,6 +467,9 @@ async fn main() -> garmin_cli::Result<()> {
             DeviceCommands::Get { id } => {
                 commands::get_device(&id, cli.profile).await
             }
+            DeviceCommands::History { db } => {
+                commands::device_history(db).await
+            }
         },
         Commands::Profile { command } => match command {
             ProfileCommands::Show => {
@@ -414,6 +477,29 @@ async fn main() -> garmin_cli::Result<()> {
             }
             ProfileCommands::Settings => {
                 commands::show_settings(cli.profile).await
+            }
+        },
+        Commands::Sync { command } => match command {
+            SyncCommands::Run {
+                db,
+                activities,
+                health,
+                performance,
+                from,
+                to,
+                dry_run,
+                simple,
+            } => {
+                commands::sync_run(cli.profile, db, activities, health, performance, from, to, dry_run, simple).await
+            }
+            SyncCommands::Status { db } => {
+                commands::sync_status(cli.profile, db).await
+            }
+            SyncCommands::Reset { db } => {
+                commands::sync_reset(db).await
+            }
+            SyncCommands::Clear { db } => {
+                commands::sync_clear(db).await
             }
         },
     };

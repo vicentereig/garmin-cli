@@ -161,14 +161,16 @@ impl GarminClient {
             StatusCode::UNAUTHORIZED => Err(GarminError::NotAuthenticated),
             StatusCode::TOO_MANY_REQUESTS => Err(GarminError::RateLimited),
             StatusCode::NOT_FOUND => {
-                Err(GarminError::invalid_response("Resource not found"))
+                let url = response.url().to_string();
+                Err(GarminError::NotFound(url))
             }
             _ => {
+                let status_code = status.as_u16();
                 let body = response.text().await.unwrap_or_default();
-                Err(GarminError::invalid_response(format!(
-                    "API error {}: {}",
-                    status, body
-                )))
+                Err(GarminError::Api {
+                    status: status_code,
+                    message: body,
+                })
             }
         }
     }
