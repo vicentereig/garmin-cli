@@ -76,6 +76,21 @@ garmin health hrv --date 2025-12-13
 
 # Fitness age
 garmin health fitness-age
+
+# Performance metrics
+garmin health lactate-threshold --days 90
+garmin health race-predictions
+garmin health endurance-score --days 30
+garmin health hill-score --days 30
+garmin health personal-records
+garmin health performance-summary
+
+# Additional health metrics
+garmin health spo2
+garmin health respiration
+garmin health intensity-minutes
+garmin health blood-pressure --from 2025-01-01 --to 2025-12-31
+garmin health hydration
 ```
 
 ## Activity Commands
