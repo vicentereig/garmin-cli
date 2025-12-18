@@ -8,6 +8,11 @@ Garmin Connect CLI built with Rust.
 cargo install --path crates/garmin-cli
 ```
 
+Or from crates.io:
+```bash
+cargo install garmin-cli
+```
+
 ## Authentication
 
 ```bash
@@ -48,7 +53,7 @@ garmin health body-battery --date 2025-12-13
 
 # Steps (with date range)
 garmin health steps
-garmin health steps --days 30
+garmin health steps --days 28
 
 # Calories
 garmin health calories
@@ -91,6 +96,10 @@ garmin health respiration
 garmin health intensity-minutes
 garmin health blood-pressure --from 2025-01-01 --to 2025-12-31
 garmin health hydration
+
+# Health insights (sleep/stress correlations)
+garmin health insights
+garmin health insights --days 28
 ```
 
 ## Activity Commands
@@ -121,6 +130,9 @@ garmin devices list
 
 # Get device details
 garmin devices get 3442975663
+
+# Show device history from synced data
+garmin devices history
 ```
 
 ## Profile Commands
@@ -131,6 +143,23 @@ garmin profile show
 
 # Show settings
 garmin profile settings
+```
+
+## Sync Commands
+
+```bash
+# Sync activities to local database
+garmin sync run
+garmin sync run --days 30
+
+# Check sync status
+garmin sync status
+
+# Reset failed sync tasks
+garmin sync reset
+
+# Clear pending sync tasks
+garmin sync clear
 ```
 
 ## Output Formats
@@ -161,20 +190,23 @@ GARMIN_PROFILE=work garmin health summary
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║                    GARMIN HEALTH SNAPSHOT                        ║
+║                     HEALTH INSIGHTS (28 days)                    ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-  ❤️  CARDIOVASCULAR                    🏃  FITNESS
-  ─────────────────────                 ─────────────────────
-  Resting HR      43 bpm                VO2 Max      53 ml/kg/min
-  HRV             65 ms                 Fitness Age  37 yrs
-  Status          BALANCED              Training     READY (69/100)
+🧠 RESTORATIVE SLEEP RATIO
+   Your avg: 38%  |  Target: >45%  |  Last night: 22% ⚠️
 
-  📈  7-DAY STEPS
-  ──────────────────────────────────────────────────────────
-  Dec 13  ████████████████████████████████████████████  22,236
-  Dec 12  ██████████████████████████████████            17,224
-  Dec 11  ██████████████████████████████                15,086
+😰 STRESS CORRELATION
+   Low restorative (<30%) → avg next-day stress: 38
+   High restorative (>45%) → avg next-day stress: 24
+
+🎯 TODAY'S PREDICTION
+   Based on last night (50m restorative, 22%):
+   Expected stress: HIGH (35-45 avg expected)
+
+📊 SLEEP QUALITY RANKING (by restorative %)
+   Best:  2025-12-14 (52% restorative, score 93)
+   Worst: 2025-12-18 (22% restorative, score 50)
 ```
 
 ## License

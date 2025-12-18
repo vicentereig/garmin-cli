@@ -138,6 +138,9 @@ enum HealthCommands {
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(short, long)]
         date: Option<String>,
+        /// Number of days to show (overrides date)
+        #[arg(long)]
+        days: Option<u32>,
     },
     /// Get heart rate data
     HeartRate {
@@ -269,6 +272,12 @@ enum HealthCommands {
         #[arg(short, long)]
         date: Option<String>,
     },
+    /// Get health insights (sleep/stress correlations)
+    Insights {
+        /// Number of days to analyze (default: 28)
+        #[arg(long, default_value = "28")]
+        days: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -393,8 +402,12 @@ async fn main() -> garmin_cli::Result<()> {
                     commands::stress(date, cli.profile).await
                 }
             }
-            HealthCommands::BodyBattery { date } => {
-                commands::body_battery(date, cli.profile).await
+            HealthCommands::BodyBattery { date, days } => {
+                if let Some(d) = days {
+                    commands::body_battery_range(d, cli.profile).await
+                } else {
+                    commands::body_battery(date, cli.profile).await
+                }
             }
             HealthCommands::HeartRate { date } => {
                 commands::heart_rate(date, cli.profile).await
@@ -458,6 +471,9 @@ async fn main() -> garmin_cli::Result<()> {
             }
             HealthCommands::PerformanceSummary { date } => {
                 commands::performance_summary(date, cli.profile).await
+            }
+            HealthCommands::Insights { days } => {
+                commands::insights(days, cli.profile).await
             }
         },
         Commands::Devices { command } => match command {

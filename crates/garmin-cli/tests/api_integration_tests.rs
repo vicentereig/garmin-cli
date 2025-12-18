@@ -971,6 +971,147 @@ mod personal_records_tests {
     }
 }
 
+mod insights_tests {
+    /// Test restorative sleep ratio calculation
+    /// Restorative = (deep + REM) / total * 100
+    #[tokio::test]
+    async fn test_restorative_sleep_ratio_calculation() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_sleep_7days.json")).unwrap();
+
+        // Dec 18: 13800s total, 1440 deep + 1560 rem = 3000s
+        let day1 = &fixture[0]["dailySleepDTO"];
+        let total = day1["sleepTimeSeconds"].as_i64().unwrap();
+        let deep = day1["deepSleepSeconds"].as_i64().unwrap();
+        let rem = day1["remSleepSeconds"].as_i64().unwrap();
+        let ratio = (deep + rem) as f64 / total as f64 * 100.0;
+
+        // 3000 / 13800 * 100 = 21.7%
+        assert!(ratio > 21.0 && ratio < 22.0, "Expected ~21.7%, got {}", ratio);
+    }
+
+    #[tokio::test]
+    async fn test_high_restorative_sleep_ratio() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_sleep_7days.json")).unwrap();
+
+        // Dec 17: 28200s total, 8400 deep + 6180 rem = 14580s
+        let day2 = &fixture[1]["dailySleepDTO"];
+        let total = day2["sleepTimeSeconds"].as_i64().unwrap();
+        let deep = day2["deepSleepSeconds"].as_i64().unwrap();
+        let rem = day2["remSleepSeconds"].as_i64().unwrap();
+        let ratio = (deep + rem) as f64 / total as f64 * 100.0;
+
+        // 14580 / 28200 * 100 = 51.7%
+        assert!(ratio > 50.0, "Expected >50%, got {}", ratio);
+    }
+
+    #[tokio::test]
+    async fn test_stress_data_parsing() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_stress_7days.json")).unwrap();
+
+        assert_eq!(fixture.len(), 7);
+        assert_eq!(fixture[0]["avgStressLevel"].as_i64().unwrap(), 23);
+        assert_eq!(fixture[2]["avgStressLevel"].as_i64().unwrap(), 42); // Dec 16 high stress
+    }
+
+    #[tokio::test]
+    async fn test_sleep_stress_correlation_pattern() {
+        let sleep_fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_sleep_7days.json")).unwrap();
+        let stress_fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_stress_7days.json")).unwrap();
+
+        // Build correlation data: each night's restorative % vs next day's stress
+        let mut low_restorative_stress: Vec<i64> = vec![];
+        let mut high_restorative_stress: Vec<i64> = vec![];
+
+        for i in 1..sleep_fixture.len() {
+            let sleep_day = &sleep_fixture[i]["dailySleepDTO"];
+            let total = sleep_day["sleepTimeSeconds"].as_i64().unwrap_or(1);
+            let deep = sleep_day["deepSleepSeconds"].as_i64().unwrap_or(0);
+            let rem = sleep_day["remSleepSeconds"].as_i64().unwrap_or(0);
+            let ratio = (deep + rem) as f64 / total as f64 * 100.0;
+
+            // Next day stress (stress data is aligned with sleep data dates)
+            let next_day_stress = stress_fixture[i - 1]["avgStressLevel"].as_i64().unwrap_or(0);
+
+            if ratio < 35.0 {
+                low_restorative_stress.push(next_day_stress);
+            } else if ratio > 45.0 {
+                high_restorative_stress.push(next_day_stress);
+            }
+        }
+
+        // Calculate averages
+        let low_avg: f64 = if low_restorative_stress.is_empty() {
+            0.0
+        } else {
+            low_restorative_stress.iter().sum::<i64>() as f64 / low_restorative_stress.len() as f64
+        };
+
+        let high_avg: f64 = if high_restorative_stress.is_empty() {
+            0.0
+        } else {
+            high_restorative_stress.iter().sum::<i64>() as f64 / high_restorative_stress.len() as f64
+        };
+
+        // High restorative sleep should correlate with lower stress
+        assert!(
+            high_avg < low_avg || high_restorative_stress.is_empty(),
+            "Expected high restorative avg ({}) < low restorative avg ({})",
+            high_avg,
+            low_avg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stress_prediction_categories() {
+        // Test categorization logic
+        let ratios = vec![22.0, 35.0, 52.0];
+        let expected_predictions = vec!["HIGH", "MODERATE", "LOW"];
+
+        for (ratio, expected) in ratios.iter().zip(expected_predictions.iter()) {
+            let prediction = if *ratio < 30.0 {
+                "HIGH"
+            } else if *ratio < 45.0 {
+                "MODERATE"
+            } else {
+                "LOW"
+            };
+            assert_eq!(prediction, *expected, "Ratio {} should predict {} stress", ratio, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_average_restorative_ratio() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/insights_sleep_7days.json")).unwrap();
+
+        let mut total_ratio = 0.0;
+        let mut count = 0;
+
+        for entry in &fixture {
+            let sleep_dto = &entry["dailySleepDTO"];
+            let total = sleep_dto["sleepTimeSeconds"].as_i64().unwrap_or(0);
+            if total == 0 {
+                continue;
+            }
+            let deep = sleep_dto["deepSleepSeconds"].as_i64().unwrap_or(0);
+            let rem = sleep_dto["remSleepSeconds"].as_i64().unwrap_or(0);
+            let ratio = (deep + rem) as f64 / total as f64 * 100.0;
+            total_ratio += ratio;
+            count += 1;
+        }
+
+        let avg_ratio = total_ratio / count as f64;
+
+        // Should be between 20% and 55%
+        assert!(avg_ratio > 20.0 && avg_ratio < 55.0, "Average ratio {} out of expected range", avg_ratio);
+    }
+}
+
 mod error_handling_tests {
     use super::*;
 

@@ -1,0 +1,79 @@
+[
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-18",
+      "sleepTimeSeconds": 13800,
+      "deepSleepSeconds": 1440,
+      "lightSleepSeconds": 10800,
+      "remSleepSeconds": 1560,
+      "awakeSleepSeconds": 300,
+      "sleepScores": { "overall": { "value": 50 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-17",
+      "sleepTimeSeconds": 28200,
+      "deepSleepSeconds": 8400,
+      "lightSleepSeconds": 13260,
+      "remSleepSeconds": 6180,
+      "awakeSleepSeconds": 720,
+      "sleepScores": { "overall": { "value": 93 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-16",
+      "sleepTimeSeconds": 28140,
+      "deepSleepSeconds": 5520,
+      "lightSleepSeconds": 18180,
+      "remSleepSeconds": 4980,
+      "awakeSleepSeconds": 1020,
+      "sleepScores": { "overall": { "value": 88 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-15",
+      "sleepTimeSeconds": 32220,
+      "deepSleepSeconds": 4620,
+      "lightSleepSeconds": 22620,
+      "remSleepSeconds": 4980,
+      "awakeSleepSeconds": 960,
+      "sleepScores": { "overall": { "value": 83 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-14",
+      "sleepTimeSeconds": 27840,
+      "deepSleepSeconds": 8400,
+      "lightSleepSeconds": 13260,
+      "remSleepSeconds": 6180,
+      "awakeSleepSeconds": 720,
+      "sleepScores": { "overall": { "value": 93 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-13",
+      "sleepTimeSeconds": 28140,
+      "deepSleepSeconds": 5520,
+      "lightSleepSeconds": 18180,
+      "remSleepSeconds": 4440,
+      "awakeSleepSeconds": 1020,
+      "sleepScores": { "overall": { "value": 88 } }
+    }
+  },
+  {
+    "dailySleepDTO": {
+      "calendarDate": "2025-12-12",
+      "sleepTimeSeconds": 32220,
+      "deepSleepSeconds": 4620,
+      "lightSleepSeconds": 22620,
+      "remSleepSeconds": 4980,
+      "awakeSleepSeconds": 960,
+      "sleepScores": { "overall": { "value": 83 } }
+    }
+  }
+]

@@ -327,6 +327,46 @@ pub async fn body_battery(date: Option<String>, profile: Option<String>) -> Resu
     Ok(())
 }
 
+/// Get body battery data for multiple days
+pub async fn body_battery_range(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let start_date = today - Duration::days(days as i64 - 1);
+
+    let path = format!(
+        "/wellness-service/wellness/bodyBattery/reports/daily?startDate={}&endDate={}",
+        start_date, today
+    );
+
+    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    println!("{:<12} {:>8} {:>8}", "Date", "Charged", "Drained");
+    println!("{}", "-".repeat(32));
+
+    if let Some(arr) = data.as_array() {
+        // API already returns in date order, just reverse to show most recent first
+        for day in arr.iter().rev() {
+            // Date field varies - try date, then calendarDate
+            let date_str = day.get("date")
+                .and_then(|v| v.as_str())
+                .or_else(|| day.get("calendarDate").and_then(|v| v.as_str()))
+                .unwrap_or("-");
+
+            let charged = day.get("charged").and_then(|v| v.as_i64())
+                .map(|v| format!("+{}", v)).unwrap_or_else(|| "-".to_string());
+            let drained = day.get("drained").and_then(|v| v.as_i64())
+                .map(|v| format!("-{}", v)).unwrap_or_else(|| "-".to_string());
+
+            println!("{:<12} {:>8} {:>8}", date_str, charged, drained);
+        }
+    }
+
+    Ok(())
+}
+
 /// Get heart rate data for a date
 pub async fn heart_rate(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
@@ -1450,6 +1490,176 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
                 println!("{:<22} {:>12}  {}  {}", name, formatted_value, date, activity);
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Get health insights analyzing sleep/stress correlations
+pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+    let display_name = get_display_name(&client, &oauth2).await?;
+
+    // Collect sleep and stress data
+    let mut sleep_data: Vec<(String, i64, i64, i64, i64)> = vec![]; // date, total, deep, rem, score
+    let mut stress_data: Vec<(String, i64)> = vec![]; // date, avg_stress
+
+    // Fetch sleep data
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        let path = format!(
+            "/wellness-service/wellness/dailySleepData/{}?date={}&nonSleepBufferMinutes=60",
+            display_name, date
+        );
+
+        if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            let sleep_dto = data.get("dailySleepDTO").unwrap_or(&data);
+            let total = sleep_dto.get("sleepTimeSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            let deep = sleep_dto.get("deepSleepSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            let rem = sleep_dto.get("remSleepSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            let score = sleep_dto.get("sleepScores")
+                .and_then(|s| s.get("overall"))
+                .and_then(|o| o.get("value"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            if total > 0 {
+                sleep_data.push((date.to_string(), total, deep, rem, score));
+            }
+        }
+    }
+
+    // Fetch stress data
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        let path = format!("/wellness-service/wellness/dailyStress/{}", date);
+
+        if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            let avg = data.get("avgStressLevel").and_then(|v| v.as_i64()).unwrap_or(0);
+            if avg > 0 {
+                stress_data.push((date.to_string(), avg));
+            }
+        }
+    }
+
+    // Calculate insights
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║                     HEALTH INSIGHTS ({} days)                     ║", days);
+    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!();
+
+    // 1. Restorative Sleep Ratio
+    let mut total_ratio = 0.0;
+    let mut last_night_ratio = 0.0;
+    let mut count = 0;
+
+    for (i, (_date, total, deep, rem, _score)) in sleep_data.iter().enumerate() {
+        if *total > 0 {
+            let ratio = (*deep + *rem) as f64 / *total as f64 * 100.0;
+            total_ratio += ratio;
+            count += 1;
+            if i == 0 {
+                last_night_ratio = ratio;
+            }
+        }
+    }
+
+    let avg_ratio = if count > 0 { total_ratio / count as f64 } else { 0.0 };
+
+    let ratio_status = if last_night_ratio < 30.0 { "⚠️" } else if last_night_ratio > 45.0 { "✓" } else { "" };
+
+    println!("🧠 RESTORATIVE SLEEP RATIO");
+    println!("   Your avg: {:.0}%  |  Target: >45%  |  Last night: {:.0}% {}",
+        avg_ratio, last_night_ratio, ratio_status);
+    println!();
+
+    // 2. Sleep-Stress Correlation
+    let mut low_restorative_stress: Vec<i64> = vec![];
+    let mut high_restorative_stress: Vec<i64> = vec![];
+
+    // Match sleep nights with next-day stress
+    for i in 1..sleep_data.len().min(stress_data.len()) {
+        let (_date, total, deep, rem, _score) = &sleep_data[i];
+        if *total > 0 {
+            let ratio = (*deep + *rem) as f64 / *total as f64 * 100.0;
+            let next_day_stress = stress_data[i - 1].1;
+
+            if ratio < 30.0 {
+                low_restorative_stress.push(next_day_stress);
+            } else if ratio > 45.0 {
+                high_restorative_stress.push(next_day_stress);
+            }
+        }
+    }
+
+    let low_avg = if low_restorative_stress.is_empty() {
+        0.0
+    } else {
+        low_restorative_stress.iter().sum::<i64>() as f64 / low_restorative_stress.len() as f64
+    };
+
+    let high_avg = if high_restorative_stress.is_empty() {
+        0.0
+    } else {
+        high_restorative_stress.iter().sum::<i64>() as f64 / high_restorative_stress.len() as f64
+    };
+
+    println!("😰 STRESS CORRELATION");
+    if !low_restorative_stress.is_empty() {
+        println!("   Low restorative (<30%) → avg next-day stress: {:.0}", low_avg);
+    }
+    if !high_restorative_stress.is_empty() {
+        println!("   High restorative (>45%) → avg next-day stress: {:.0}", high_avg);
+    }
+    if low_restorative_stress.is_empty() && high_restorative_stress.is_empty() {
+        println!("   (Insufficient data for correlation)");
+    }
+    println!();
+
+    // 3. Today's Prediction
+    let prediction = if last_night_ratio < 30.0 {
+        "HIGH (35-45 avg expected)"
+    } else if last_night_ratio < 45.0 {
+        "MODERATE (25-35 avg expected)"
+    } else {
+        "LOW (15-25 avg expected)"
+    };
+
+    let last_night_restorative = if !sleep_data.is_empty() {
+        let (_, total, deep, rem, _) = &sleep_data[0];
+        let restorative_mins = (*deep + *rem) / 60;
+        format!("{}m restorative, {:.0}%", restorative_mins, last_night_ratio)
+    } else {
+        "no data".to_string()
+    };
+
+    println!("🎯 TODAY'S PREDICTION");
+    println!("   Based on last night ({}):", last_night_restorative);
+    println!("   Expected stress: {}", prediction);
+    println!();
+
+    // 4. Best/Worst Days
+    if sleep_data.len() >= 3 {
+        let mut sleep_with_ratio: Vec<(&str, f64, i64)> = sleep_data.iter()
+            .map(|(date, total, deep, rem, score)| {
+                let ratio = if *total > 0 { (*deep + *rem) as f64 / *total as f64 * 100.0 } else { 0.0 };
+                (date.as_str(), ratio, *score)
+            })
+            .collect();
+
+        sleep_with_ratio.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        println!("📊 SLEEP QUALITY RANKING (by restorative %)");
+        println!("   Best:  {} ({:.0}% restorative, score {})",
+            sleep_with_ratio[0].0, sleep_with_ratio[0].1, sleep_with_ratio[0].2);
+        println!("   Worst: {} ({:.0}% restorative, score {})",
+            sleep_with_ratio.last().unwrap().0,
+            sleep_with_ratio.last().unwrap().1,
+            sleep_with_ratio.last().unwrap().2);
     }
 
     Ok(())

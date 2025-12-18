@@ -1,0 +1,37 @@
+[
+  {
+    "calendarDate": "2025-12-18",
+    "avgStressLevel": 23,
+    "maxStressLevel": 80
+  },
+  {
+    "calendarDate": "2025-12-17",
+    "avgStressLevel": 28,
+    "maxStressLevel": 85
+  },
+  {
+    "calendarDate": "2025-12-16",
+    "avgStressLevel": 42,
+    "maxStressLevel": 95
+  },
+  {
+    "calendarDate": "2025-12-15",
+    "avgStressLevel": 18,
+    "maxStressLevel": 60
+  },
+  {
+    "calendarDate": "2025-12-14",
+    "avgStressLevel": 30,
+    "maxStressLevel": 88
+  },
+  {
+    "calendarDate": "2025-12-13",
+    "avgStressLevel": 45,
+    "maxStressLevel": 99
+  },
+  {
+    "calendarDate": "2025-12-12",
+    "avgStressLevel": 35,
+    "maxStressLevel": 92
+  }
+]
