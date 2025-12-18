@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/garmin-cli"]
 
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 authors = ["Vicente Reig <vicente@reig.dev>"]
 license = "MIT"
@@ -58,9 +58,6 @@ duckdb = { version = "1.1", features = ["bundled"] }
 gpx = "0.10"
 geo = "0.28"
 wkt = "0.11"
-
-# Embeddings
-fastembed = "4"
 
 # Testing
 wiremock = "0.6"
