@@ -141,7 +141,7 @@ pub async fn latest(profile: Option<String>) -> Result<()> {
 
     let path = "/weight-service/weight/latest";
 
-    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+    let data: serde_json::Value = client.get_json(&oauth2, path).await?;
 
     let date = data
         .get("calendarDate")

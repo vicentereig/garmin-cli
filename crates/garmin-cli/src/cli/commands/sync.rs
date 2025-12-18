@@ -12,6 +12,7 @@ use crate::Database;
 use super::auth::refresh_token;
 
 /// Run sync operation
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     profile: Option<String>,
     db_path: Option<String>,

@@ -236,8 +236,8 @@ pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()>
         }
 
         println!(
-            "{:<6} {:>6} {:>6} {:>6}  {}",
-            "Hour", "Avg", "Min", "Max", "Level"
+            "{:<6} {:>6} {:>6} {:>6}  Level",
+            "Hour", "Avg", "Min", "Max"
         );
         println!("{}", "-".repeat(50));
 
@@ -1361,7 +1361,7 @@ pub async fn blood_pressure(
                 .get("measurementTimestampLocal")
                 .and_then(|v| v.as_i64());
             let dt = timestamp
-                .and_then(|t| chrono::DateTime::from_timestamp_millis(t))
+                .and_then(chrono::DateTime::from_timestamp_millis)
                 .map(|dt| {
                     dt.with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M")
@@ -1774,9 +1774,7 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
 
             if let Some((name, format_type)) = type_names.get(&type_id) {
                 let formatted_value = match *format_type {
-                    "time" => value
-                        .map(|v| format_race_time(v))
-                        .unwrap_or("-".to_string()),
+                    "time" => value.map(format_race_time).unwrap_or("-".to_string()),
                     "distance" => value
                         .map(|v| format!("{:.2} km", v / 1000.0))
                         .unwrap_or("-".to_string()),
@@ -1975,7 +1973,7 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
     };
 
     let last_night_restorative = if !sleep_data.is_empty() {
-        let (_, total, deep, rem, _) = &sleep_data[0];
+        let (_, _total, deep, rem, _) = &sleep_data[0];
         let restorative_mins = (*deep + *rem) / 60;
         format!(
             "{}m restorative, {:.0}%",

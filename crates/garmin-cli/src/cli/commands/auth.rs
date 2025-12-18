@@ -39,7 +39,7 @@ pub async fn login(email: Option<String>, profile: Option<String>) -> Result<()>
     // Perform login
     let mut sso_client = SsoClient::new(None)?;
     let (oauth1, oauth2) = sso_client
-        .login(&email, &password, Some(|| prompt_mfa()))
+        .login(&email, &password, Some(prompt_mfa))
         .await?;
 
     // Save tokens
@@ -139,8 +139,8 @@ fn rpassword_prompt(prompt: &str) -> Result<String> {
     io::stdout().flush()?;
 
     // Use rpassword if available, otherwise just read normally (less secure)
-    let password = rpassword::read_password()
-        .map_err(|e| GarminError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+    let password =
+        rpassword::read_password().map_err(|e| GarminError::Io(io::Error::other(e.to_string())))?;
 
     Ok(password)
 }

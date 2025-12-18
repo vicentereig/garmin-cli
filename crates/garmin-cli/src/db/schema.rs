@@ -3,6 +3,7 @@
 use duckdb::Connection;
 
 /// Current schema version
+#[allow(dead_code)]
 const SCHEMA_VERSION: i32 = 1;
 
 /// Run all pending migrations

@@ -17,7 +17,7 @@ pub async fn list(profile: Option<String>) -> Result<()> {
 
     let path = "/device-service/deviceregistration/devices";
 
-    let devices: Vec<serde_json::Value> = client.get_json(&oauth2, &path).await?;
+    let devices: Vec<serde_json::Value> = client.get_json(&oauth2, path).await?;
 
     if devices.is_empty() {
         println!("No devices found.");
@@ -125,6 +125,7 @@ pub async fn history(db_path: Option<String>) -> Result<()> {
         )
         .map_err(|e| crate::GarminError::Database(e.to_string()))?;
 
+    #[allow(clippy::type_complexity)]
     let devices: Vec<(
         Option<String>,
         Option<i64>,

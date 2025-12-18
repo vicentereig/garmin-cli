@@ -626,7 +626,7 @@ mod lactate_threshold_tests {
 
         // 3.85 m/s = ~4:20/km
         assert_eq!(pace_min, 4);
-        assert!(pace_sec >= 19 && pace_sec <= 21);
+        assert!((19..=21).contains(&pace_sec));
     }
 }
 
@@ -1123,8 +1123,8 @@ mod insights_tests {
     #[tokio::test]
     async fn test_stress_prediction_categories() {
         // Test categorization logic
-        let ratios = vec![22.0, 35.0, 52.0];
-        let expected_predictions = vec!["HIGH", "MODERATE", "LOW"];
+        let ratios = [22.0, 35.0, 52.0];
+        let expected_predictions = ["HIGH", "MODERATE", "LOW"];
 
         for (ratio, expected) in ratios.iter().zip(expected_predictions.iter()) {
             let prediction = if *ratio < 30.0 {

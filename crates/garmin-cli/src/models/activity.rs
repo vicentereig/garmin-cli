@@ -272,10 +272,7 @@ impl ActivitySummary {
             .as_ref()
             .map(|s| {
                 // Handle both ISO format (T separator) and space-separated format
-                s.split(|c| c == 'T' || c == ' ')
-                    .next()
-                    .unwrap_or(s)
-                    .to_string()
+                s.split(['T', ' ']).next().unwrap_or(s).to_string()
             })
             .unwrap_or_else(|| "-".to_string())
     }
