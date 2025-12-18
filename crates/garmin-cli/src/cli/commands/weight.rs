@@ -35,10 +35,10 @@ pub async fn list(from: Option<String>, to: Option<String>, profile: Option<Stri
         }
 
         println!(
-            "{:<12} {:>10} {:>10} {:>8} {:>8}",
-            "Date", "Weight", "BMI", "Fat %", "Muscle %"
+            "{:<12} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
+            "Date", "Weight", "BMI", "Fat %", "Muscle %", "Water %", "Bone"
         );
-        println!("{}", "-".repeat(55));
+        println!("{}", "-".repeat(75));
 
         for entry in entries {
             let date = entry
@@ -70,9 +70,21 @@ pub async fn list(from: Option<String>, to: Option<String>, profile: Option<Stri
                 .map(|m| format!("{:.1}", m / 1000.0))
                 .unwrap_or_else(|| "-".to_string());
 
+            let body_water = entry
+                .get("bodyWater")
+                .and_then(|v| v.as_f64())
+                .map(|w| format!("{:.1}", w))
+                .unwrap_or_else(|| "-".to_string());
+
+            let bone_mass = entry
+                .get("boneMass")
+                .and_then(|v| v.as_f64())
+                .map(|b| format!("{:.1}", b / 1000.0))
+                .unwrap_or_else(|| "-".to_string());
+
             println!(
-                "{:<12} {:>10} {:>10} {:>8} {:>8}",
-                date, weight, bmi, body_fat, muscle_mass
+                "{:<12} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
+                date, weight, bmi, body_fat, muscle_mass, body_water, bone_mass
             );
         }
 
