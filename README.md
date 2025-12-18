@@ -4,14 +4,22 @@ Garmin Connect CLI built with Rust.
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
 ```bash
-cargo install --path crates/garmin-cli
+brew tap vicentereig/tap
+brew install garmin
 ```
 
-Or from crates.io:
+### Cargo
+
 ```bash
 cargo install garmin-cli
 ```
+
+### Binary Download
+
+Pre-built binaries for macOS and Linux (amd64/arm64) are available on the [releases page](https://github.com/vicentereig/garmin-cli/releases).
 
 ## Authentication
 
