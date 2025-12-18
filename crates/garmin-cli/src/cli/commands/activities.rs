@@ -91,10 +91,7 @@ pub async fn download(
 
     // Build path based on format
     let (path, extension) = match format.to_lowercase().as_str() {
-        "fit" => (
-            format!("/download-service/files/activity/{}", id),
-            "zip",
-        ),
+        "fit" => (format!("/download-service/files/activity/{}", id), "zip"),
         "gpx" => (
             format!("/download-service/export/gpx/activity/{}", id),
             "gpx",
@@ -115,7 +112,11 @@ pub async fn download(
         }
     };
 
-    println!("Downloading activity {} as {}...", id, format.to_uppercase());
+    println!(
+        "Downloading activity {} as {}...",
+        id,
+        format.to_uppercase()
+    );
 
     let bytes = client.download(&oauth2, &path).await?;
 

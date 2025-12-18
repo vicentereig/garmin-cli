@@ -162,8 +162,13 @@ impl std::fmt::Display for TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SyncTaskType {
-    Activities { start: u32, limit: u32 },
-    ActivityDetail { activity_id: i64 },
+    Activities {
+        start: u32,
+        limit: u32,
+    },
+    ActivityDetail {
+        activity_id: i64,
+    },
     DownloadGpx {
         activity_id: i64,
         #[serde(default)]
@@ -171,10 +176,19 @@ pub enum SyncTaskType {
         #[serde(default)]
         activity_date: Option<String>,
     },
-    DailyHealth { date: NaiveDate },
-    Performance { date: NaiveDate },
-    Weight { from: NaiveDate, to: NaiveDate },
-    GenerateEmbeddings { activity_ids: Vec<i64> },
+    DailyHealth {
+        date: NaiveDate,
+    },
+    Performance {
+        date: NaiveDate,
+    },
+    Weight {
+        from: NaiveDate,
+        to: NaiveDate,
+    },
+    GenerateEmbeddings {
+        activity_ids: Vec<i64>,
+    },
 }
 
 /// Sync task for queue

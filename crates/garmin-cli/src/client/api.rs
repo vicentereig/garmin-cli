@@ -78,7 +78,11 @@ impl GarminClient {
     }
 
     /// Make an authenticated GET request and deserialize JSON response
-    pub async fn get_json<T: DeserializeOwned>(&self, token: &OAuth2Token, path: &str) -> Result<T> {
+    pub async fn get_json<T: DeserializeOwned>(
+        &self,
+        token: &OAuth2Token,
+        path: &str,
+    ) -> Result<T> {
         let response = self.get(token, path).await?;
         response.json().await.map_err(|e| {
             GarminError::invalid_response(format!("Failed to parse JSON response: {}", e))
@@ -86,7 +90,12 @@ impl GarminClient {
     }
 
     /// Make an authenticated POST request with JSON body
-    pub async fn post_json(&self, token: &OAuth2Token, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn post_json(
+        &self,
+        token: &OAuth2Token,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let url = self.build_url(path);
         let headers = self.build_headers(token);
 
@@ -112,7 +121,12 @@ impl GarminClient {
     }
 
     /// Upload a file using multipart form data
-    pub async fn upload(&self, token: &OAuth2Token, path: &str, file_path: &Path) -> Result<serde_json::Value> {
+    pub async fn upload(
+        &self,
+        token: &OAuth2Token,
+        path: &str,
+        file_path: &Path,
+    ) -> Result<serde_json::Value> {
         let url = self.build_url(path);
         let headers = self.build_headers(token);
 
@@ -155,9 +169,10 @@ impl GarminClient {
         let status = response.status();
 
         match status {
-            StatusCode::OK | StatusCode::CREATED | StatusCode::ACCEPTED | StatusCode::NO_CONTENT => {
-                Ok(response)
-            }
+            StatusCode::OK
+            | StatusCode::CREATED
+            | StatusCode::ACCEPTED
+            | StatusCode::NO_CONTENT => Ok(response),
             StatusCode::UNAUTHORIZED => Err(GarminError::NotAuthenticated),
             StatusCode::TOO_MANY_REQUESTS => Err(GarminError::RateLimited),
             StatusCode::NOT_FOUND => {

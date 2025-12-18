@@ -169,7 +169,8 @@ impl RateLimiter {
     pub fn on_rate_limit(&mut self) {
         self.consecutive_429s += 1;
         self.backoff = Duration::from_secs_f64(
-            (self.backoff.as_secs_f64() * self.backoff_multiplier).min(self.max_backoff.as_secs_f64()),
+            (self.backoff.as_secs_f64() * self.backoff_multiplier)
+                .min(self.max_backoff.as_secs_f64()),
         );
     }
 

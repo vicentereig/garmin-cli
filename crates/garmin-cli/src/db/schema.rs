@@ -192,8 +192,13 @@ fn migration_v1(conn: &Connection) -> crate::Result<()> {
     ];
 
     for sql in statements {
-        conn.execute(sql, [])
-            .map_err(|e| crate::error::GarminError::Database(format!("{}: {}", sql.chars().take(50).collect::<String>(), e)))?;
+        conn.execute(sql, []).map_err(|e| {
+            crate::error::GarminError::Database(format!(
+                "{}: {}",
+                sql.chars().take(50).collect::<String>(),
+                e
+            ))
+        })?;
     }
 
     Ok(())

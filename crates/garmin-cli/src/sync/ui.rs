@@ -87,14 +87,12 @@ impl SyncUI {
         let profile = self.progress.get_profile();
         let date_range = self.progress.get_date_range();
 
-        let header_text = vec![
-            Line::from(vec![
-                Span::styled("  Profile: ", Style::default().fg(self.theme.dim)),
-                Span::styled(&profile, Style::default().fg(self.theme.title).bold()),
-                Span::raw("    "),
-                Span::styled(&date_range, Style::default().fg(self.theme.dim)),
-            ]),
-        ];
+        let header_text = vec![Line::from(vec![
+            Span::styled("  Profile: ", Style::default().fg(self.theme.dim)),
+            Span::styled(&profile, Style::default().fg(self.theme.title).bold()),
+            Span::raw("    "),
+            Span::styled(&date_range, Style::default().fg(self.theme.dim)),
+        ])];
 
         let header = Paragraph::new(header_text).block(
             Block::default()
@@ -123,14 +121,45 @@ impl SyncUI {
             ])
             .split(area);
 
-        self.draw_gauge(frame, chunks[0], &self.progress.activities, self.theme.activities, "Activities");
-        self.draw_gauge(frame, chunks[1], &self.progress.gpx, self.theme.gpx, "GPX Downloads");
-        self.draw_gauge(frame, chunks[2], &self.progress.health, self.theme.health, "Health");
-        self.draw_gauge(frame, chunks[3], &self.progress.performance, self.theme.performance, "Performance");
+        self.draw_gauge(
+            frame,
+            chunks[0],
+            &self.progress.activities,
+            self.theme.activities,
+            "Activities",
+        );
+        self.draw_gauge(
+            frame,
+            chunks[1],
+            &self.progress.gpx,
+            self.theme.gpx,
+            "GPX Downloads",
+        );
+        self.draw_gauge(
+            frame,
+            chunks[2],
+            &self.progress.health,
+            self.theme.health,
+            "Health",
+        );
+        self.draw_gauge(
+            frame,
+            chunks[3],
+            &self.progress.performance,
+            self.theme.performance,
+            "Performance",
+        );
     }
 
     /// Draw a single progress gauge with visual bar
-    fn draw_gauge(&self, frame: &mut Frame, area: Rect, stream: &StreamProgress, color: Color, title: &str) {
+    fn draw_gauge(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        stream: &StreamProgress,
+        color: Color,
+        title: &str,
+    ) {
         let total = stream.get_total();
         let completed = stream.get_completed();
         let failed = stream.get_failed();
@@ -156,7 +185,12 @@ impl SyncUI {
             )
             .gauge_style(Style::default().fg(color).bg(Color::DarkGray))
             .percent(percent)
-            .label(Span::styled(label, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+            .label(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ));
 
         frame.render_widget(gauge, area);
     }
@@ -194,7 +228,10 @@ impl SyncUI {
         let stats_text = vec![
             Line::from(vec![
                 Span::styled("  Rate: ", Style::default().fg(self.theme.dim)),
-                Span::styled(format!("{} req/min", rpm), Style::default().fg(self.theme.title)),
+                Span::styled(
+                    format!("{} req/min", rpm),
+                    Style::default().fg(self.theme.title),
+                ),
                 Span::raw("  "),
                 Span::styled("Elapsed: ", Style::default().fg(self.theme.dim)),
                 Span::styled(&elapsed, Style::default().fg(self.theme.title)),

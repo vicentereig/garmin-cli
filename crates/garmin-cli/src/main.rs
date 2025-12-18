@@ -360,34 +360,26 @@ async fn main() -> garmin_cli::Result<()> {
 
     let result = match cli.command {
         Commands::Auth { command } => match command {
-            AuthCommands::Login { email } => {
-                commands::login(email, cli.profile).await
-            }
-            AuthCommands::Logout => {
-                commands::logout(cli.profile).await
-            }
-            AuthCommands::Status => {
-                commands::status(cli.profile).await
-            }
+            AuthCommands::Login { email } => commands::login(email, cli.profile).await,
+            AuthCommands::Logout => commands::logout(cli.profile).await,
+            AuthCommands::Status => commands::status(cli.profile).await,
         },
         Commands::Activities { command } => match command {
             ActivityCommands::List { limit, start } => {
                 commands::list_activities(limit, start, cli.profile).await
             }
-            ActivityCommands::Get { id } => {
-                commands::get_activity(id, cli.profile).await
-            }
-            ActivityCommands::Download { id, file_type, output } => {
-                commands::download_activity(id, &file_type, output, cli.profile).await
-            }
+            ActivityCommands::Get { id } => commands::get_activity(id, cli.profile).await,
+            ActivityCommands::Download {
+                id,
+                file_type,
+                output,
+            } => commands::download_activity(id, &file_type, output, cli.profile).await,
             ActivityCommands::Upload { file } => {
                 commands::upload_activity(&file, cli.profile).await
             }
         },
         Commands::Health { command } => match command {
-            HealthCommands::Summary { date } => {
-                commands::summary(date, cli.profile).await
-            }
+            HealthCommands::Summary { date } => commands::summary(date, cli.profile).await,
             HealthCommands::Sleep { date, days } => {
                 if let Some(d) = days {
                     commands::sleep_range(d, cli.profile).await
@@ -409,30 +401,18 @@ async fn main() -> garmin_cli::Result<()> {
                     commands::body_battery(date, cli.profile).await
                 }
             }
-            HealthCommands::HeartRate { date } => {
-                commands::heart_rate(date, cli.profile).await
-            }
-            HealthCommands::Steps { days } => {
-                commands::steps(Some(days), cli.profile).await
-            }
-            HealthCommands::Calories { days } => {
-                commands::calories(Some(days), cli.profile).await
-            }
-            HealthCommands::Vo2max { date } => {
-                commands::vo2max(date, cli.profile).await
-            }
+            HealthCommands::HeartRate { date } => commands::heart_rate(date, cli.profile).await,
+            HealthCommands::Steps { days } => commands::steps(Some(days), cli.profile).await,
+            HealthCommands::Calories { days } => commands::calories(Some(days), cli.profile).await,
+            HealthCommands::Vo2max { date } => commands::vo2max(date, cli.profile).await,
             HealthCommands::TrainingReadiness { date } => {
                 commands::training_readiness(date, cli.profile).await
             }
             HealthCommands::TrainingStatus { date } => {
                 commands::training_status(date, cli.profile).await
             }
-            HealthCommands::Hrv { date } => {
-                commands::hrv(date, cli.profile).await
-            }
-            HealthCommands::FitnessAge { date } => {
-                commands::fitness_age(date, cli.profile).await
-            }
+            HealthCommands::Hrv { date } => commands::hrv(date, cli.profile).await,
+            HealthCommands::FitnessAge { date } => commands::fitness_age(date, cli.profile).await,
             HealthCommands::Weight { from, to } => {
                 commands::list_weight(from, to, cli.profile).await
             }
@@ -451,49 +431,29 @@ async fn main() -> garmin_cli::Result<()> {
             HealthCommands::HillScore { days } => {
                 commands::hill_score(Some(days), cli.profile).await
             }
-            HealthCommands::Spo2 { date } => {
-                commands::spo2(date, cli.profile).await
-            }
-            HealthCommands::Respiration { date } => {
-                commands::respiration(date, cli.profile).await
-            }
+            HealthCommands::Spo2 { date } => commands::spo2(date, cli.profile).await,
+            HealthCommands::Respiration { date } => commands::respiration(date, cli.profile).await,
             HealthCommands::IntensityMinutes { date } => {
                 commands::intensity_minutes(date, cli.profile).await
             }
             HealthCommands::BloodPressure { from, to } => {
                 commands::blood_pressure(from, to, cli.profile).await
             }
-            HealthCommands::Hydration { date } => {
-                commands::hydration(date, cli.profile).await
-            }
-            HealthCommands::PersonalRecords => {
-                commands::personal_records(cli.profile).await
-            }
+            HealthCommands::Hydration { date } => commands::hydration(date, cli.profile).await,
+            HealthCommands::PersonalRecords => commands::personal_records(cli.profile).await,
             HealthCommands::PerformanceSummary { date } => {
                 commands::performance_summary(date, cli.profile).await
             }
-            HealthCommands::Insights { days } => {
-                commands::insights(days, cli.profile).await
-            }
+            HealthCommands::Insights { days } => commands::insights(days, cli.profile).await,
         },
         Commands::Devices { command } => match command {
-            DeviceCommands::List => {
-                commands::list_devices(cli.profile).await
-            }
-            DeviceCommands::Get { id } => {
-                commands::get_device(&id, cli.profile).await
-            }
-            DeviceCommands::History { db } => {
-                commands::device_history(db).await
-            }
+            DeviceCommands::List => commands::list_devices(cli.profile).await,
+            DeviceCommands::Get { id } => commands::get_device(&id, cli.profile).await,
+            DeviceCommands::History { db } => commands::device_history(db).await,
         },
         Commands::Profile { command } => match command {
-            ProfileCommands::Show => {
-                commands::show_profile(cli.profile).await
-            }
-            ProfileCommands::Settings => {
-                commands::show_settings(cli.profile).await
-            }
+            ProfileCommands::Show => commands::show_profile(cli.profile).await,
+            ProfileCommands::Settings => commands::show_settings(cli.profile).await,
         },
         Commands::Sync { command } => match command {
             SyncCommands::Run {
@@ -506,17 +466,22 @@ async fn main() -> garmin_cli::Result<()> {
                 dry_run,
                 simple,
             } => {
-                commands::sync_run(cli.profile, db, activities, health, performance, from, to, dry_run, simple).await
+                commands::sync_run(
+                    cli.profile,
+                    db,
+                    activities,
+                    health,
+                    performance,
+                    from,
+                    to,
+                    dry_run,
+                    simple,
+                )
+                .await
             }
-            SyncCommands::Status { db } => {
-                commands::sync_status(cli.profile, db).await
-            }
-            SyncCommands::Reset { db } => {
-                commands::sync_reset(db).await
-            }
-            SyncCommands::Clear { db } => {
-                commands::sync_clear(db).await
-            }
+            SyncCommands::Status { db } => commands::sync_status(cli.profile, db).await,
+            SyncCommands::Reset { db } => commands::sync_reset(db).await,
+            SyncCommands::Clear { db } => commands::sync_clear(db).await,
         },
     };
 

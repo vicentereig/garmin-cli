@@ -13,7 +13,9 @@ pub async fn show(profile: Option<String>) -> Result<()> {
 
     let client = GarminClient::new(&oauth1.domain);
 
-    let social: serde_json::Value = client.get_json(&oauth2, "/userprofile-service/socialProfile").await?;
+    let social: serde_json::Value = client
+        .get_json(&oauth2, "/userprofile-service/socialProfile")
+        .await?;
 
     println!("User Profile");
     println!("{}", "-".repeat(40));
@@ -46,7 +48,9 @@ pub async fn settings(profile: Option<String>) -> Result<()> {
 
     let client = GarminClient::new(&oauth1.domain);
 
-    let settings: serde_json::Value = client.get_json(&oauth2, "/userprofile-service/userprofile/user-settings").await?;
+    let settings: serde_json::Value = client
+        .get_json(&oauth2, "/userprofile-service/userprofile/user-settings")
+        .await?;
 
     println!("User Settings");
     println!("{}", "-".repeat(40));

@@ -129,7 +129,10 @@ mod sleep_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/wellness-service/wellness/dailySleepData/TestUser?date=2025-12-04")
+            .get_json(
+                &token,
+                "/wellness-service/wellness/dailySleepData/TestUser?date=2025-12-04",
+            )
             .await
             .expect("Failed to get sleep data");
 
@@ -141,7 +144,8 @@ mod sleep_tests {
 
     #[tokio::test]
     async fn test_sleep_total_calculation() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/sleep_2025-12-04.json")).unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/sleep_2025-12-04.json")).unwrap();
         let sleep_dto = &fixture["dailySleepDTO"];
 
         let deep = sleep_dto["deepSleepSeconds"].as_i64().unwrap();
@@ -174,7 +178,10 @@ mod activity_tests {
         let token = test_token();
 
         let activities: Vec<ActivitySummary> = client
-            .get_json(&token, "/activitylist-service/activities/search/activities?limit=10&start=0")
+            .get_json(
+                &token,
+                "/activitylist-service/activities/search/activities?limit=10&start=0",
+            )
             .await
             .expect("Failed to list activities");
 
@@ -185,7 +192,8 @@ mod activity_tests {
 
     #[tokio::test]
     async fn test_activity_summary_methods() {
-        let fixture: Vec<ActivitySummary> = serde_json::from_str(include_str!("fixtures/activities_list.json")).unwrap();
+        let fixture: Vec<ActivitySummary> =
+            serde_json::from_str(include_str!("fixtures/activities_list.json")).unwrap();
 
         let activity = &fixture[0];
 
@@ -260,7 +268,10 @@ mod weight_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/weight-service/weight/dateRange?startDate=2025-12-01&endDate=2025-12-13")
+            .get_json(
+                &token,
+                "/weight-service/weight/dateRange?startDate=2025-12-01&endDate=2025-12-13",
+            )
             .await
             .expect("Failed to list weight");
 
@@ -416,7 +427,9 @@ mod vo2max_tests {
         let fixture = include_str!("fixtures/vo2max.json");
 
         Mock::given(method("GET"))
-            .and(path("/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10"))
+            .and(path(
+                "/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -425,7 +438,10 @@ mod vo2max_tests {
         let token = test_token();
 
         let result: Vec<serde_json::Value> = client
-            .get_json(&token, "/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10")
+            .get_json(
+                &token,
+                "/metrics-service/metrics/maxmet/daily/2025-12-10/2025-12-10",
+            )
             .await
             .expect("Failed to get VO2 max");
 
@@ -455,7 +471,9 @@ mod training_readiness_tests {
         let fixture = include_str!("fixtures/training_readiness.json");
 
         Mock::given(method("GET"))
-            .and(path("/metrics-service/metrics/trainingreadiness/2025-12-13"))
+            .and(path(
+                "/metrics-service/metrics/trainingreadiness/2025-12-13",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -464,7 +482,10 @@ mod training_readiness_tests {
         let token = test_token();
 
         let result: Vec<serde_json::Value> = client
-            .get_json(&token, "/metrics-service/metrics/trainingreadiness/2025-12-13")
+            .get_json(
+                &token,
+                "/metrics-service/metrics/trainingreadiness/2025-12-13",
+            )
             .await
             .expect("Failed to get training readiness");
 
@@ -580,7 +601,10 @@ mod lactate_threshold_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/biometric-service/biometric/latestLactateThreshold")
+            .get_json(
+                &token,
+                "/biometric-service/biometric/latestLactateThreshold",
+            )
             .await
             .expect("Failed to get lactate threshold");
 
@@ -615,7 +639,9 @@ mod race_predictions_tests {
         let fixture = include_str!("fixtures/race_predictions.json");
 
         Mock::given(method("GET"))
-            .and(path("/metrics-service/metrics/racepredictions/latest/testuser"))
+            .and(path(
+                "/metrics-service/metrics/racepredictions/latest/testuser",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -624,7 +650,10 @@ mod race_predictions_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/metrics-service/metrics/racepredictions/latest/testuser")
+            .get_json(
+                &token,
+                "/metrics-service/metrics/racepredictions/latest/testuser",
+            )
             .await
             .expect("Failed to get race predictions");
 
@@ -775,7 +804,9 @@ mod respiration_tests {
         let fixture = include_str!("fixtures/respiration.json");
 
         Mock::given(method("GET"))
-            .and(path("/wellness-service/wellness/daily/respiration/2025-12-10"))
+            .and(path(
+                "/wellness-service/wellness/daily/respiration/2025-12-10",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -784,7 +815,10 @@ mod respiration_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/wellness-service/wellness/daily/respiration/2025-12-10")
+            .get_json(
+                &token,
+                "/wellness-service/wellness/daily/respiration/2025-12-10",
+            )
             .await
             .expect("Failed to get respiration data");
 
@@ -855,7 +889,9 @@ mod blood_pressure_tests {
         let fixture = include_str!("fixtures/blood_pressure.json");
 
         Mock::given(method("GET"))
-            .and(path("/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10"))
+            .and(path(
+                "/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -864,7 +900,10 @@ mod blood_pressure_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10")
+            .get_json(
+                &token,
+                "/bloodpressure-service/bloodpressure/range/2025-12-01/2025-12-10",
+            )
             .await
             .expect("Failed to get blood pressure");
 
@@ -900,7 +939,9 @@ mod hydration_tests {
         let fixture = include_str!("fixtures/hydration.json");
 
         Mock::given(method("GET"))
-            .and(path("/usersummary-service/usersummary/hydration/daily/2025-12-10"))
+            .and(path(
+                "/usersummary-service/usersummary/hydration/daily/2025-12-10",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
@@ -909,7 +950,10 @@ mod hydration_tests {
         let token = test_token();
 
         let result: serde_json::Value = client
-            .get_json(&token, "/usersummary-service/usersummary/hydration/daily/2025-12-10")
+            .get_json(
+                &token,
+                "/usersummary-service/usersummary/hydration/daily/2025-12-10",
+            )
             .await
             .expect("Failed to get hydration data");
 
@@ -948,7 +992,10 @@ mod personal_records_tests {
         let token = test_token();
 
         let result: Vec<serde_json::Value> = client
-            .get_json(&token, "/personalrecord-service/personalrecord/prs/TestUser")
+            .get_json(
+                &token,
+                "/personalrecord-service/personalrecord/prs/TestUser",
+            )
             .await
             .expect("Failed to get personal records");
 
@@ -987,7 +1034,11 @@ mod insights_tests {
         let ratio = (deep + rem) as f64 / total as f64 * 100.0;
 
         // 3000 / 13800 * 100 = 21.7%
-        assert!(ratio > 21.0 && ratio < 22.0, "Expected ~21.7%, got {}", ratio);
+        assert!(
+            ratio > 21.0 && ratio < 22.0,
+            "Expected ~21.7%, got {}",
+            ratio
+        );
     }
 
     #[tokio::test]
@@ -1035,7 +1086,9 @@ mod insights_tests {
             let ratio = (deep + rem) as f64 / total as f64 * 100.0;
 
             // Next day stress (stress data is aligned with sleep data dates)
-            let next_day_stress = stress_fixture[i - 1]["avgStressLevel"].as_i64().unwrap_or(0);
+            let next_day_stress = stress_fixture[i - 1]["avgStressLevel"]
+                .as_i64()
+                .unwrap_or(0);
 
             if ratio < 35.0 {
                 low_restorative_stress.push(next_day_stress);
@@ -1054,7 +1107,8 @@ mod insights_tests {
         let high_avg: f64 = if high_restorative_stress.is_empty() {
             0.0
         } else {
-            high_restorative_stress.iter().sum::<i64>() as f64 / high_restorative_stress.len() as f64
+            high_restorative_stress.iter().sum::<i64>() as f64
+                / high_restorative_stress.len() as f64
         };
 
         // High restorative sleep should correlate with lower stress
@@ -1080,7 +1134,11 @@ mod insights_tests {
             } else {
                 "LOW"
             };
-            assert_eq!(prediction, *expected, "Ratio {} should predict {} stress", ratio, expected);
+            assert_eq!(
+                prediction, *expected,
+                "Ratio {} should predict {} stress",
+                ratio, expected
+            );
         }
     }
 
@@ -1108,7 +1166,11 @@ mod insights_tests {
         let avg_ratio = total_ratio / count as f64;
 
         // Should be between 20% and 55%
-        assert!(avg_ratio > 20.0 && avg_ratio < 55.0, "Average ratio {} out of expected range", avg_ratio);
+        assert!(
+            avg_ratio > 20.0 && avg_ratio < 55.0,
+            "Average ratio {} out of expected range",
+            avg_ratio
+        );
     }
 }
 
@@ -1132,7 +1194,10 @@ mod error_handling_tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, garmin_cli::error::GarminError::NotAuthenticated));
+        assert!(matches!(
+            err,
+            garmin_cli::error::GarminError::NotAuthenticated
+        ));
     }
 
     #[tokio::test]

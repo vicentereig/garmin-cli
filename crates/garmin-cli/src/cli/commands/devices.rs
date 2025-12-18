@@ -24,29 +24,37 @@ pub async fn list(profile: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<25} {:<15} {:<12}", "Device", "Model", "Software", "Last Sync");
+    println!(
+        "{:<20} {:<25} {:<15} {:<12}",
+        "Device", "Model", "Software", "Last Sync"
+    );
     println!("{}", "-".repeat(75));
 
     for device in &devices {
-        let name = device.get("displayName")
+        let name = device
+            .get("displayName")
             .or_else(|| device.get("deviceTypeName"))
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown");
 
-        let model = device.get("partNumber")
+        let model = device
+            .get("partNumber")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
 
-        let software = device.get("currentFirmwareVersion")
+        let software = device
+            .get("currentFirmwareVersion")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
 
-        let last_sync = device.get("lastSyncTime")
+        let last_sync = device
+            .get("lastSyncTime")
             .and_then(|v| v.as_str())
             .map(|s| s.split('T').next().unwrap_or(s))
             .unwrap_or("-");
 
-        println!("{:<20} {:<25} {:<15} {:<12}",
+        println!(
+            "{:<20} {:<25} {:<15} {:<12}",
             truncate(name, 19),
             truncate(model, 24),
             truncate(software, 14),
@@ -66,7 +74,10 @@ pub async fn get(device_id: &str, profile: Option<String>) -> Result<()> {
 
     let client = GarminClient::new(&oauth1.domain);
 
-    let path = format!("/device-service/deviceservice/device-info/settings/{}", device_id);
+    let path = format!(
+        "/device-service/deviceservice/device-info/settings/{}",
+        device_id
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
@@ -114,7 +125,13 @@ pub async fn history(db_path: Option<String>) -> Result<()> {
         )
         .map_err(|e| crate::GarminError::Database(e.to_string()))?;
 
-    let devices: Vec<(Option<String>, Option<i64>, Option<String>, Option<String>, i64)> = stmt
+    let devices: Vec<(
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,

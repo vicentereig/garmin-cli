@@ -18,8 +18,8 @@ use chrono::{Duration, NaiveDate, Utc};
 
 use crate::client::{GarminClient, OAuth2Token};
 use crate::db::models::{SyncTask, SyncTaskType};
-use std::io::{self, Write};
 use crate::{Database, GarminError, Result};
+use std::io::{self, Write};
 
 pub use progress::{SharedProgress, SyncProgress};
 pub use rate_limiter::{RateLimiter, SharedRateLimiter};
@@ -94,7 +94,8 @@ impl SyncEngine {
                 jump
             );
 
-            let activities: Vec<serde_json::Value> = self.client.get_json(&self.token, &path).await?;
+            let activities: Vec<serde_json::Value> =
+                self.client.get_json(&self.token, &path).await?;
 
             if activities.is_empty() {
                 break;
@@ -117,7 +118,8 @@ impl SyncEngine {
             );
 
             self.rate_limiter.wait().await;
-            let activities: Vec<serde_json::Value> = self.client.get_json(&self.token, &path).await?;
+            let activities: Vec<serde_json::Value> =
+                self.client.get_json(&self.token, &path).await?;
 
             if activities.is_empty() {
                 high = mid;
@@ -182,7 +184,9 @@ impl SyncEngine {
         self.count_tasks_for_progress(&progress)?;
 
         // Determine date range for display
-        let from_date = opts.from_date.unwrap_or_else(|| Utc::now().date_naive() - Duration::days(365));
+        let from_date = opts
+            .from_date
+            .unwrap_or_else(|| Utc::now().date_naive() - Duration::days(365));
         let to_date = opts.to_date.unwrap_or_else(|| Utc::now().date_naive());
         progress.set_date_range(&from_date.to_string(), &to_date.to_string());
 
@@ -195,7 +199,9 @@ impl SyncEngine {
         });
 
         // Run sync with progress updates
-        let stats = self.run_with_progress_tracking(opts, progress.clone()).await?;
+        let stats = self
+            .run_with_progress_tracking(opts, progress.clone())
+            .await?;
 
         // Wait for TUI to finish
         ui_handle.abort();
@@ -404,7 +410,10 @@ impl SyncEngine {
         let to_date = opts.to_date.unwrap_or_else(|| Utc::now().date_naive());
 
         let total_days = (to_date - from_date).num_days();
-        println!("  Date range: {} to {} ({} days)", from_date, to_date, total_days);
+        println!(
+            "  Date range: {} to {} ({} days)",
+            from_date, to_date, total_days
+        );
 
         // Plan activity sync
         if opts.sync_activities {
@@ -432,7 +441,10 @@ impl SyncEngine {
         // Start with first page, we'll add more as we discover them
         let task = SyncTask::new(
             self.profile_id,
-            SyncTaskType::Activities { start: 0, limit: 50 },
+            SyncTaskType::Activities {
+                start: 0,
+                limit: 50,
+            },
         );
         self.queue.push(task)?;
         Ok(())
@@ -505,24 +517,14 @@ impl SyncEngine {
     /// Execute a single sync task
     async fn execute_task(&mut self, task: &SyncTask) -> Result<()> {
         match &task.task_type {
-            SyncTaskType::Activities { start, limit } => {
-                self.sync_activities(*start, *limit).await
-            }
+            SyncTaskType::Activities { start, limit } => self.sync_activities(*start, *limit).await,
             SyncTaskType::ActivityDetail { activity_id } => {
                 self.sync_activity_detail(*activity_id).await
             }
-            SyncTaskType::DownloadGpx { activity_id, .. } => {
-                self.download_gpx(*activity_id).await
-            }
-            SyncTaskType::DailyHealth { date } => {
-                self.sync_daily_health(*date).await
-            }
-            SyncTaskType::Performance { date } => {
-                self.sync_performance(*date).await
-            }
-            SyncTaskType::Weight { from, to } => {
-                self.sync_weight(*from, *to).await
-            }
+            SyncTaskType::DownloadGpx { activity_id, .. } => self.download_gpx(*activity_id).await,
+            SyncTaskType::DailyHealth { date } => self.sync_daily_health(*date).await,
+            SyncTaskType::Performance { date } => self.sync_performance(*date).await,
+            SyncTaskType::Weight { from, to } => self.sync_weight(*from, *to).await,
             SyncTaskType::GenerateEmbeddings { activity_ids } => {
                 self.generate_embeddings(activity_ids).await
             }
@@ -542,7 +544,11 @@ impl SyncEngine {
             self.store_activity(activity)?;
 
             // Queue GPX download for activities with GPS
-            if activity.get("hasPolyline").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if activity
+                .get("hasPolyline")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 if let Some(id) = activity.get("activityId").and_then(|v| v.as_i64()) {
                     let activity_name = activity
                         .get("activityName")
@@ -607,13 +613,25 @@ impl SyncEngine {
                 activity_id,
                 self.profile_id,
                 activity.get("activityName").and_then(|v| v.as_str()),
-                activity.get("activityType").and_then(|v| v.get("typeKey")).and_then(|v| v.as_str()),
+                activity
+                    .get("activityType")
+                    .and_then(|v| v.get("typeKey"))
+                    .and_then(|v| v.as_str()),
                 activity.get("startTimeLocal").and_then(|v| v.as_str()),
                 activity.get("duration").and_then(|v| v.as_f64()),
                 activity.get("distance").and_then(|v| v.as_f64()),
-                activity.get("calories").and_then(|v| v.as_i64()).map(|v| v as i32),
-                activity.get("averageHR").and_then(|v| v.as_i64()).map(|v| v as i32),
-                activity.get("maxHR").and_then(|v| v.as_i64()).map(|v| v as i32),
+                activity
+                    .get("calories")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                activity
+                    .get("averageHR")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                activity
+                    .get("maxHR")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
                 activity.get("averageSpeed").and_then(|v| v.as_f64()),
                 activity.get("maxSpeed").and_then(|v| v.as_f64()),
                 activity.get("elevationGain").and_then(|v| v.as_f64()),
@@ -727,16 +745,46 @@ impl SyncEngine {
             duckdb::params![
                 self.profile_id,
                 date.to_string(),
-                health.get("totalSteps").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("dailyStepGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("totalKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("activeKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("restingHeartRate").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("sleepingSeconds").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("averageStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("maxStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("bodyBatteryChargedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
-                health.get("bodyBatteryDrainedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
+                health
+                    .get("totalSteps")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("dailyStepGoal")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("totalKilocalories")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("activeKilocalories")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("restingHeartRate")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("sleepingSeconds")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("averageStressLevel")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("maxStressLevel")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("bodyBatteryChargedValue")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
+                health
+                    .get("bodyBatteryDrainedValue")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32),
                 health.to_string(),
             ],
         )
@@ -757,7 +805,10 @@ impl SyncEngine {
         // Fetch race predictions
         let race_predictions: Option<serde_json::Value> = self
             .client
-            .get_json(&self.token, "/metrics-service/metrics/racepredictions/latest")
+            .get_json(
+                &self.token,
+                "/metrics-service/metrics/racepredictions/latest",
+            )
             .await
             .ok();
 
@@ -950,7 +1001,10 @@ fn print_task_status(task: &SyncTask, stats: &SyncStats) {
             format!("Weight {} to {}", from, to)
         }
         SyncTaskType::GenerateEmbeddings { activity_ids } => {
-            format!("Generating embeddings for {} activities", activity_ids.len())
+            format!(
+                "Generating embeddings for {} activities",
+                activity_ids.len()
+            )
         }
     };
 

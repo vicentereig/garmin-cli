@@ -117,8 +117,7 @@ impl CredentialStore {
 
     /// Check if credentials exist
     pub fn has_credentials(&self) -> bool {
-        self.base_dir.join(OAUTH1_FILENAME).exists()
-            && self.base_dir.join(OAUTH2_FILENAME).exists()
+        self.base_dir.join(OAUTH1_FILENAME).exists() && self.base_dir.join(OAUTH2_FILENAME).exists()
     }
 
     /// Clear all stored credentials

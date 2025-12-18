@@ -89,9 +89,15 @@ pub async fn status(profile: Option<String>) -> Result<()> {
             } else {
                 let expires_in = oauth2.expires_at - chrono::Utc::now().timestamp();
                 if expires_in > 3600 {
-                    println!("Access Token: Valid (expires in {} hours)", expires_in / 3600);
+                    println!(
+                        "Access Token: Valid (expires in {} hours)",
+                        expires_in / 3600
+                    );
                 } else if expires_in > 60 {
-                    println!("Access Token: Valid (expires in {} minutes)", expires_in / 60);
+                    println!(
+                        "Access Token: Valid (expires in {} minutes)",
+                        expires_in / 60
+                    );
                 } else {
                     println!("Access Token: Valid (expires in {} seconds)", expires_in);
                 }
@@ -112,9 +118,7 @@ pub async fn status(profile: Option<String>) -> Result<()> {
 
 /// Refresh OAuth2 token using OAuth1 token
 pub async fn refresh_token(store: &CredentialStore) -> Result<(OAuth1Token, OAuth2Token)> {
-    let (oauth1, oauth2) = store
-        .load_tokens()?
-        .ok_or(GarminError::NotAuthenticated)?;
+    let (oauth1, oauth2) = store.load_tokens()?.ok_or(GarminError::NotAuthenticated)?;
 
     if !oauth2.is_expired() {
         return Ok((oauth1, oauth2));

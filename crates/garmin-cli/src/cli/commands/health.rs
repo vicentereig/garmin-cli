@@ -27,7 +27,10 @@ pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()
     println!("{}", "-".repeat(40));
 
     if let Some(steps) = data.get("totalSteps").and_then(|v| v.as_i64()) {
-        let goal = data.get("dailyStepGoal").and_then(|v| v.as_i64()).unwrap_or(10000);
+        let goal = data
+            .get("dailyStepGoal")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(10000);
         let pct = (steps as f64 / goal as f64 * 100.0) as i64;
         println!("Steps:           {:>6} / {} ({}%)", steps, goal, pct);
     }
@@ -45,7 +48,10 @@ pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()
     }
 
     if let Some(floors) = data.get("floorsAscended").and_then(|v| v.as_i64()) {
-        let goal = data.get("floorsAscendedGoal").and_then(|v| v.as_i64()).unwrap_or(10);
+        let goal = data
+            .get("floorsAscendedGoal")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(10);
         println!("Floors:          {:>6} / {}", floors, goal);
     }
 
@@ -65,10 +71,16 @@ pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()
 }
 
 /// Get user's display name from profile
-async fn get_display_name(client: &GarminClient, oauth2: &crate::client::OAuth2Token) -> Result<String> {
+async fn get_display_name(
+    client: &GarminClient,
+    oauth2: &crate::client::OAuth2Token,
+) -> Result<String> {
     // Try social profile endpoint
-    let profile: serde_json::Value = client.get_json(oauth2, "/userprofile-service/socialProfile").await?;
-    profile.get("displayName")
+    let profile: serde_json::Value = client
+        .get_json(oauth2, "/userprofile-service/socialProfile")
+        .await?;
+    profile
+        .get("displayName")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| crate::error::GarminError::invalid_response("Could not get display name"))
@@ -111,7 +123,10 @@ pub async fn sleep_range(days: u32, profile: Option<String>) -> Result<()> {
     // Get display name for sleep endpoint
     let display_name = get_display_name(&client, &oauth2).await?;
 
-    println!("{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}", "Date", "Total", "Deep", "Light", "REM", "Score");
+    println!(
+        "{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}",
+        "Date", "Total", "Deep", "Light", "REM", "Score"
+    );
     println!("{}", "-".repeat(58));
 
     for i in 0..days {
@@ -138,15 +153,23 @@ pub async fn sleep_range(days: u32, profile: Option<String>) -> Result<()> {
                     "-".to_string()
                 };
 
-                let score = sleep_dto.get("sleepScores")
+                let score = sleep_dto
+                    .get("sleepScores")
                     .and_then(|s| s.get("overall"))
                     .and_then(|o| o.get("value"))
                     .and_then(|v| v.as_i64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
 
-                println!("{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}", date, total,
-                    format_duration(deep), format_duration(light), format_duration(rem), score);
+                println!(
+                    "{:<12} {:>8} {:>8} {:>8} {:>8} {:>6}",
+                    date,
+                    total,
+                    format_duration(deep),
+                    format_duration(light),
+                    format_duration(rem),
+                    score
+                );
             }
             Err(_) => {
                 println!("{:<12} {:>8}", date, "no data");
@@ -175,15 +198,18 @@ pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()>
 
     println!("Stress for {}", date);
     println!("{}", "-".repeat(50));
-    println!("Average: {}  Max: {}",
+    println!(
+        "Average: {}  Max: {}",
         avg.map(|v| v.to_string()).unwrap_or("-".to_string()),
-        max.map(|v| v.to_string()).unwrap_or("-".to_string()));
+        max.map(|v| v.to_string()).unwrap_or("-".to_string())
+    );
     println!();
 
     // Parse hourly stress from stressValuesArray
     if let Some(values) = data.get("stressValuesArray").and_then(|v| v.as_array()) {
         // Group by hour and calculate averages
-        let mut hourly: std::collections::BTreeMap<u32, Vec<i64>> = std::collections::BTreeMap::new();
+        let mut hourly: std::collections::BTreeMap<u32, Vec<i64>> =
+            std::collections::BTreeMap::new();
 
         for entry in values {
             if let Some(arr) = entry.as_array() {
@@ -197,7 +223,11 @@ pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()>
                             .map(|dt| dt.with_timezone(&chrono::Local));
 
                         if let Some(local_dt) = dt {
-                            let hour = local_dt.format("%H").to_string().parse::<u32>().unwrap_or(0);
+                            let hour = local_dt
+                                .format("%H")
+                                .to_string()
+                                .parse::<u32>()
+                                .unwrap_or(0);
                             hourly.entry(hour).or_default().push(stress_val);
                         }
                     }
@@ -205,7 +235,10 @@ pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()>
             }
         }
 
-        println!("{:<6} {:>6} {:>6} {:>6}  {}", "Hour", "Avg", "Min", "Max", "Level");
+        println!(
+            "{:<6} {:>6} {:>6} {:>6}  {}",
+            "Hour", "Avg", "Min", "Max", "Level"
+        );
         println!("{}", "-".repeat(50));
 
         for (hour, vals) in &hourly {
@@ -217,7 +250,10 @@ pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()>
                 let bar = stress_bar(avg);
                 let level = stress_level(avg);
 
-                println!("{:02}:00  {:>6} {:>6} {:>6}  {} {}", hour, avg, min, max, bar, level);
+                println!(
+                    "{:02}:00  {:>6} {:>6} {:>6}  {} {}",
+                    hour, avg, min, max, bar, level
+                );
             }
         }
     }
@@ -258,11 +294,13 @@ pub async fn stress_range(days: u32, profile: Option<String>) -> Result<()> {
 
         match client.get_json::<serde_json::Value>(&oauth2, &path).await {
             Ok(data) => {
-                let avg = data.get("avgStressLevel")
+                let avg = data
+                    .get("avgStressLevel")
                     .and_then(|v| v.as_i64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
-                let max = data.get("maxStressLevel")
+                let max = data
+                    .get("maxStressLevel")
                     .and_then(|v| v.as_i64())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".to_string());
@@ -350,15 +388,22 @@ pub async fn body_battery_range(days: u32, profile: Option<String>) -> Result<()
         // API already returns in date order, just reverse to show most recent first
         for day in arr.iter().rev() {
             // Date field varies - try date, then calendarDate
-            let date_str = day.get("date")
+            let date_str = day
+                .get("date")
                 .and_then(|v| v.as_str())
                 .or_else(|| day.get("calendarDate").and_then(|v| v.as_str()))
                 .unwrap_or("-");
 
-            let charged = day.get("charged").and_then(|v| v.as_i64())
-                .map(|v| format!("+{}", v)).unwrap_or_else(|| "-".to_string());
-            let drained = day.get("drained").and_then(|v| v.as_i64())
-                .map(|v| format!("-{}", v)).unwrap_or_else(|| "-".to_string());
+            let charged = day
+                .get("charged")
+                .and_then(|v| v.as_i64())
+                .map(|v| format!("+{}", v))
+                .unwrap_or_else(|| "-".to_string());
+            let drained = day
+                .get("drained")
+                .and_then(|v| v.as_i64())
+                .map(|v| format!("-{}", v))
+                .unwrap_or_else(|| "-".to_string());
 
             println!("{:<12} {:>8} {:>8}", date_str, charged, drained);
         }
@@ -435,7 +480,6 @@ fn format_duration(seconds: Option<i64>) -> String {
     }
 }
 
-
 /// Get calorie data for a date range
 pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
@@ -446,7 +490,10 @@ pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> 
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(10);
 
-    println!("{:<12} {:>8} {:>8} {:>8} {:>8}", "Date", "Total", "Active", "BMR", "Food");
+    println!(
+        "{:<12} {:>8} {:>8} {:>8} {:>8}",
+        "Date", "Total", "Active", "BMR", "Food"
+    );
     println!("{}", "-".repeat(50));
 
     let mut total_cals: i64 = 0;
@@ -457,19 +504,35 @@ pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> 
         let date = today - Duration::days(i as i64);
         let path = format!(
             "/usersummary-service/usersummary/daily/{}?calendarDate={}",
-            display_name, date.format("%Y-%m-%d")
+            display_name,
+            date.format("%Y-%m-%d")
         );
 
         match client.get_json::<serde_json::Value>(&oauth2, &path).await {
             Ok(data) => {
-                let total = data.get("totalKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-                let active = data.get("activeKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-                let bmr = data.get("bmrKilocalories").and_then(|v| v.as_f64()).unwrap_or(0.0) as i64;
-                let food = data.get("consumedKilocalories").and_then(|v| v.as_f64()).map(|f| f as i64);
+                let total = data
+                    .get("totalKilocalories")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as i64;
+                let active = data
+                    .get("activeKilocalories")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as i64;
+                let bmr = data
+                    .get("bmrKilocalories")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as i64;
+                let food = data
+                    .get("consumedKilocalories")
+                    .and_then(|v| v.as_f64())
+                    .map(|f| f as i64);
 
                 let food_str = food.map(|f| format!("{}", f)).unwrap_or("-".to_string());
 
-                println!("{:<12} {:>8} {:>8} {:>8} {:>8}", date, total, active, bmr, food_str);
+                println!(
+                    "{:<12} {:>8} {:>8} {:>8} {:>8}",
+                    date, total, active, bmr, food_str
+                );
 
                 total_cals += total;
                 total_active += active;
@@ -483,7 +546,12 @@ pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> 
 
     if count > 0 {
         println!("{}", "-".repeat(50));
-        println!("{:<12} {:>8} {:>8}", "Average", total_cals / count, total_active / count);
+        println!(
+            "{:<12} {:>8} {:>8}",
+            "Average",
+            total_cals / count,
+            total_active / count
+        );
     }
 
     Ok(())
@@ -520,7 +588,10 @@ pub async fn vo2max(date: Option<String>, profile: Option<String>) -> Result<()>
             }
             // Heat/Altitude acclimation
             if let Some(accl) = entry.get("heatAltitudeAcclimation") {
-                if let Some(heat) = accl.get("heatAcclimationPercentage").and_then(|v| v.as_i64()) {
+                if let Some(heat) = accl
+                    .get("heatAcclimationPercentage")
+                    .and_then(|v| v.as_i64())
+                {
                     if heat > 0 {
                         println!("Heat Acclim:     {}%", heat);
                     }
@@ -556,7 +627,10 @@ pub async fn training_readiness(date: Option<String>, profile: Option<String>) -
     let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
 
     if let Some(score) = entry.get("score").and_then(|v| v.as_i64()) {
-        let level = entry.get("level").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let level = entry
+            .get("level")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown");
         println!("Score:           {} ({})", score, level);
     }
 
@@ -594,7 +668,10 @@ pub async fn training_status(date: Option<String>, profile: Option<String>) -> R
     let date = resolve_date(date)?;
     let client = GarminClient::new(&oauth1.domain);
 
-    let path = format!("/metrics-service/metrics/trainingstatus/aggregated/{}", date);
+    let path = format!(
+        "/metrics-service/metrics/trainingstatus/aggregated/{}",
+        date
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
@@ -733,7 +810,10 @@ pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
-    println!("{:<12} {:>8} {:>8} {:>6} {:>10}", "Date", "Steps", "Goal", "%", "Distance");
+    println!(
+        "{:<12} {:>8} {:>8} {:>6} {:>10}",
+        "Date", "Steps", "Goal", "%", "Distance"
+    );
     println!("{}", "-".repeat(50));
 
     let mut total_steps: i64 = 0;
@@ -742,22 +822,38 @@ pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {
 
     if let Some(entries) = data.as_array() {
         for entry in entries.iter().rev() {
-            let date = entry.get("calendarDate")
+            let date = entry
+                .get("calendarDate")
                 .and_then(|v| v.as_str())
                 .unwrap_or("-");
 
-            let steps_val = entry.get("totalSteps").and_then(|v| v.as_i64()).unwrap_or(0);
-            let goal = entry.get("stepGoal").and_then(|v| v.as_i64()).unwrap_or(10000);
-            let distance = entry.get("totalDistance")
+            let steps_val = entry
+                .get("totalSteps")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let goal = entry
+                .get("stepGoal")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(10000);
+            let distance = entry
+                .get("totalDistance")
                 .and_then(|v| v.as_f64())
                 .map(|d| d / 1000.0);
 
-            let pct = if goal > 0 { (steps_val as f64 / goal as f64 * 100.0) as i64 } else { 0 };
+            let pct = if goal > 0 {
+                (steps_val as f64 / goal as f64 * 100.0) as i64
+            } else {
+                0
+            };
 
-            let dist_str = distance.map(|d| format!("{:.2} km", d)).unwrap_or("-".to_string());
+            let dist_str = distance
+                .map(|d| format!("{:.2} km", d))
+                .unwrap_or("-".to_string());
 
-            println!("{:<12} {:>8} {:>8} {:>5}% {:>10}",
-                date, steps_val, goal, pct, dist_str);
+            println!(
+                "{:<12} {:>8} {:>8} {:>5}% {:>10}",
+                date, steps_val, goal, pct, dist_str
+            );
 
             total_steps += steps_val;
             total_goal += goal;
@@ -769,8 +865,15 @@ pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {
         println!("{}", "-".repeat(50));
         let avg_steps = total_steps / count;
         let avg_goal = total_goal / count;
-        let avg_pct = if avg_goal > 0 { (avg_steps as f64 / avg_goal as f64 * 100.0) as i64 } else { 0 };
-        println!("{:<12} {:>8} {:>8} {:>5}%", "Average", avg_steps, avg_goal, avg_pct);
+        let avg_pct = if avg_goal > 0 {
+            (avg_steps as f64 / avg_goal as f64 * 100.0) as i64
+        } else {
+            0
+        };
+        println!(
+            "{:<12} {:>8} {:>8} {:>5}%",
+            "Average", avg_steps, avg_goal, avg_pct
+        );
     }
 
     Ok(())
@@ -794,7 +897,12 @@ fn print_sleep_summary(data: &serde_json::Value) {
     println!("REM Sleep:    {}", format_duration(rem));
     println!("Awake:        {}", format_duration(awake));
 
-    if let Some(score) = data.get("sleepScores").and_then(|s| s.get("overall")).and_then(|o| o.get("value")).and_then(|v| v.as_i64()) {
+    if let Some(score) = data
+        .get("sleepScores")
+        .and_then(|s| s.get("overall"))
+        .and_then(|o| o.get("value"))
+        .and_then(|v| v.as_i64())
+    {
         println!("Sleep Score:  {}", score);
     }
 }
@@ -823,20 +931,30 @@ pub async fn lactate_threshold(days: Option<u32>, profile: Option<String>) -> Re
         today.format("%Y-%m-%d")
     );
 
-    let hr_data: serde_json::Value = client.get_json(&oauth2, &hr_path).await.unwrap_or(serde_json::Value::Null);
-    let speed_data: serde_json::Value = client.get_json(&oauth2, &speed_path).await.unwrap_or(serde_json::Value::Null);
+    let hr_data: serde_json::Value = client
+        .get_json(&oauth2, &hr_path)
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let speed_data: serde_json::Value = client
+        .get_json(&oauth2, &speed_path)
+        .await
+        .unwrap_or(serde_json::Value::Null);
 
     println!("Lactate Threshold History ({} days)", num_days);
     println!("{}", "-".repeat(50));
 
     // Combine HR and speed data by date
     // API returns: {"from": "date", "value": number}
-    let mut entries: std::collections::BTreeMap<String, (Option<i64>, Option<f64>)> = std::collections::BTreeMap::new();
+    let mut entries: std::collections::BTreeMap<String, (Option<i64>, Option<f64>)> =
+        std::collections::BTreeMap::new();
 
     if let Some(arr) = hr_data.as_array() {
         for entry in arr {
             if let Some(date) = entry.get("from").and_then(|v| v.as_str()) {
-                let hr = entry.get("value").and_then(|v| v.as_f64()).map(|v| v as i64);
+                let hr = entry
+                    .get("value")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as i64);
                 entries.entry(date.to_string()).or_insert((None, None)).0 = hr;
             }
         }
@@ -866,13 +984,15 @@ pub async fn lactate_threshold(days: Option<u32>, profile: Option<String>) -> Re
 
     for (date, (hr, speed)) in entries.iter().rev() {
         let hr_str = hr.map(|h| format!("{}", h)).unwrap_or("-".to_string());
-        let pace_str = speed.map(|s| {
-            // Convert: value is stored as speed factor, pace = 100/value sec/km
-            let pace_sec_per_km = 100.0 / s;
-            let pace_min = (pace_sec_per_km / 60.0).floor() as i64;
-            let pace_sec = (pace_sec_per_km % 60.0) as i64;
-            format!("{}:{:02}/km", pace_min, pace_sec)
-        }).unwrap_or("-".to_string());
+        let pace_str = speed
+            .map(|s| {
+                // Convert: value is stored as speed factor, pace = 100/value sec/km
+                let pace_sec_per_km = 100.0 / s;
+                let pace_min = (pace_sec_per_km / 60.0).floor() as i64;
+                let pace_sec = (pace_sec_per_km % 60.0) as i64;
+                format!("{}:{:02}/km", pace_min, pace_sec)
+            })
+            .unwrap_or("-".to_string());
 
         println!("{:<12} {:>8} {:>10}", date, hr_str, pace_str);
     }
@@ -889,7 +1009,10 @@ pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> 
     let client = GarminClient::new(&oauth1.domain);
     let display_name = get_display_name(&client, &oauth2).await?;
 
-    let path = format!("/metrics-service/metrics/racepredictions/latest/{}", display_name);
+    let path = format!(
+        "/metrics-service/metrics/racepredictions/latest/{}",
+        display_name
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
@@ -964,18 +1087,46 @@ pub async fn endurance_score(days: Option<u32>, profile: Option<String>) -> Resu
             return Ok(());
         }
 
-        println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", "Date", "Score", "Class", "VO2", "Train", "Activity");
+        println!(
+            "{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}",
+            "Date", "Score", "Class", "VO2", "Train", "Activity"
+        );
         println!("{}", "-".repeat(50));
 
         for entry in arr.iter().rev().take(10) {
-            let date = entry.get("calendarDate").and_then(|v| v.as_str()).unwrap_or("-");
-            let score = entry.get("overallScore").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let class = entry.get("classification").and_then(|v| v.as_str()).unwrap_or("-");
-            let vo2 = entry.get("vo2MaxFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let train = entry.get("trainingHistoryFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let activity = entry.get("activityHistoryFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let date = entry
+                .get("calendarDate")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let score = entry
+                .get("overallScore")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let class = entry
+                .get("classification")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let vo2 = entry
+                .get("vo2MaxFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let train = entry
+                .get("trainingHistoryFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let activity = entry
+                .get("activityHistoryFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
 
-            println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", date, score, class, vo2, train, activity);
+            println!(
+                "{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}",
+                date, score, class, vo2, train, activity
+            );
         }
     }
 
@@ -1009,18 +1160,46 @@ pub async fn hill_score(days: Option<u32>, profile: Option<String>) -> Result<()
             return Ok(());
         }
 
-        println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", "Date", "Score", "Class", "Str", "End", "Pwr");
+        println!(
+            "{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}",
+            "Date", "Score", "Class", "Str", "End", "Pwr"
+        );
         println!("{}", "-".repeat(50));
 
         for entry in arr.iter().rev().take(10) {
-            let date = entry.get("calendarDate").and_then(|v| v.as_str()).unwrap_or("-");
-            let score = entry.get("overallScore").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let class = entry.get("classification").and_then(|v| v.as_str()).unwrap_or("-");
-            let strength = entry.get("strengthFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let endurance = entry.get("enduranceFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let power = entry.get("powerFactor").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let date = entry
+                .get("calendarDate")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let score = entry
+                .get("overallScore")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let class = entry
+                .get("classification")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let strength = entry
+                .get("strengthFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let endurance = entry
+                .get("enduranceFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let power = entry
+                .get("powerFactor")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
 
-            println!("{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}", date, score, class, strength, endurance, power);
+            println!(
+                "{:<12} {:>6} {:>10} {:>8} {:>8} {:>8}",
+                date, score, class, strength, endurance, power
+            );
         }
     }
 
@@ -1072,11 +1251,17 @@ pub async fn respiration(date: Option<String>, profile: Option<String>) -> Resul
     println!("Respiration for {}", date);
     println!("{}", "-".repeat(40));
 
-    if let Some(waking) = data.get("avgWakingRespirationValue").and_then(|v| v.as_f64()) {
+    if let Some(waking) = data
+        .get("avgWakingRespirationValue")
+        .and_then(|v| v.as_f64())
+    {
         println!("Avg Waking:  {:.1} brpm", waking);
     }
 
-    if let Some(sleep) = data.get("avgSleepRespirationValue").and_then(|v| v.as_f64()) {
+    if let Some(sleep) = data
+        .get("avgSleepRespirationValue")
+        .and_then(|v| v.as_f64())
+    {
         println!("Avg Sleep:   {:.1} brpm", sleep);
     }
 
@@ -1106,10 +1291,22 @@ pub async fn intensity_minutes(date: Option<String>, profile: Option<String>) ->
     println!("Intensity Minutes for {}", date);
     println!("{}", "-".repeat(40));
 
-    let moderate = data.get("moderateIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
-    let vigorous = data.get("vigorousIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
-    let total = data.get("totalIntensityMinutes").and_then(|v| v.as_i64()).unwrap_or(0);
-    let goal = data.get("weeklyGoal").and_then(|v| v.as_i64()).unwrap_or(150);
+    let moderate = data
+        .get("moderateIntensityMinutes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let vigorous = data
+        .get("vigorousIntensityMinutes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let total = data
+        .get("totalIntensityMinutes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let goal = data
+        .get("weeklyGoal")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(150);
 
     println!("Moderate:    {} min", moderate);
     println!("Vigorous:    {} min (x2 = {})", vigorous, vigorous * 2);
@@ -1123,16 +1320,24 @@ pub async fn intensity_minutes(date: Option<String>, profile: Option<String>) ->
 }
 
 /// Get blood pressure data
-pub async fn blood_pressure(from: Option<String>, to: Option<String>, profile: Option<String>) -> Result<()> {
+pub async fn blood_pressure(
+    from: Option<String>,
+    to: Option<String>,
+    profile: Option<String>,
+) -> Result<()> {
     let store = CredentialStore::new(profile)?;
     let (oauth1, oauth2) = refresh_token(&store).await?;
 
     let client = GarminClient::new(&oauth1.domain);
     let today = Local::now().date_naive();
     let end_date = to.unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
-    let start_date = from.unwrap_or_else(|| (today - Duration::days(30)).format("%Y-%m-%d").to_string());
+    let start_date =
+        from.unwrap_or_else(|| (today - Duration::days(30)).format("%Y-%m-%d").to_string());
 
-    let path = format!("/bloodpressure-service/bloodpressure/range/{}/{}", start_date, end_date);
+    let path = format!(
+        "/bloodpressure-service/bloodpressure/range/{}/{}",
+        start_date, end_date
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
@@ -1145,25 +1350,50 @@ pub async fn blood_pressure(from: Option<String>, to: Option<String>, profile: O
             return Ok(());
         }
 
-        println!("{:<20} {:>8} {:>8} {:>6}", "Date/Time", "Systolic", "Diastolic", "Pulse");
+        println!(
+            "{:<20} {:>8} {:>8} {:>6}",
+            "Date/Time", "Systolic", "Diastolic", "Pulse"
+        );
         println!("{}", "-".repeat(50));
 
         for entry in measurements {
-            let timestamp = entry.get("measurementTimestampLocal").and_then(|v| v.as_i64());
-            let dt = timestamp.and_then(|t| chrono::DateTime::from_timestamp_millis(t))
-                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+            let timestamp = entry
+                .get("measurementTimestampLocal")
+                .and_then(|v| v.as_i64());
+            let dt = timestamp
+                .and_then(|t| chrono::DateTime::from_timestamp_millis(t))
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
                 .unwrap_or_else(|| "-".to_string());
 
-            let systolic = entry.get("systolic").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let diastolic = entry.get("diastolic").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
-            let pulse = entry.get("pulse").and_then(|v| v.as_i64()).map(|s| s.to_string()).unwrap_or("-".to_string());
+            let systolic = entry
+                .get("systolic")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let diastolic = entry
+                .get("diastolic")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
+            let pulse = entry
+                .get("pulse")
+                .and_then(|v| v.as_i64())
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string());
 
             let classification = classify_bp(
                 entry.get("systolic").and_then(|v| v.as_i64()),
-                entry.get("diastolic").and_then(|v| v.as_i64())
+                entry.get("diastolic").and_then(|v| v.as_i64()),
             );
 
-            println!("{:<20} {:>8} {:>8} {:>6}  {}", dt, systolic, diastolic, pulse, classification);
+            println!(
+                "{:<20} {:>8} {:>8} {:>6}  {}",
+                dt, systolic, diastolic, pulse, classification
+            );
         }
     }
 
@@ -1173,13 +1403,19 @@ pub async fn blood_pressure(from: Option<String>, to: Option<String>, profile: O
 fn classify_bp(systolic: Option<i64>, diastolic: Option<i64>) -> &'static str {
     match (systolic, diastolic) {
         (Some(s), Some(d)) => {
-            if s < 120 && d < 80 { "Normal" }
-            else if s < 130 && d < 80 { "Elevated" }
-            else if s < 140 || d < 90 { "High Stage 1" }
-            else if s >= 140 || d >= 90 { "High Stage 2" }
-            else { "Unknown" }
+            if s < 120 && d < 80 {
+                "Normal"
+            } else if s < 130 && d < 80 {
+                "Elevated"
+            } else if s < 140 || d < 90 {
+                "High Stage 1"
+            } else if s >= 140 || d >= 90 {
+                "High Stage 2"
+            } else {
+                "Unknown"
+            }
         }
-        _ => "Unknown"
+        _ => "Unknown",
     }
 }
 
@@ -1199,7 +1435,10 @@ pub async fn hydration(date: Option<String>, profile: Option<String>) -> Result<
     println!("{}", "-".repeat(40));
 
     let value = data.get("valueInML").and_then(|v| v.as_i64()).unwrap_or(0);
-    let goal = data.get("goalInML").and_then(|v| v.as_i64()).unwrap_or(2500);
+    let goal = data
+        .get("goalInML")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(2500);
 
     println!("Intake:      {} ml ({:.1} L)", value, value as f64 / 1000.0);
     println!("Goal:        {} ml ({:.1} L)", goal, goal as f64 / 1000.0);
@@ -1232,7 +1471,10 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 
     // VO2 Max
     let vo2_path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &vo2_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &vo2_path)
+        .await
+    {
         if let Some(arr) = data.as_array() {
             if let Some(entry) = arr.first() {
                 if let Some(generic) = entry.get("generic") {
@@ -1246,7 +1488,10 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 
     // Fitness Age
     let fitness_path = format!("/fitnessage-service/fitnessage/{}", date);
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &fitness_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &fitness_path)
+        .await
+    {
         let fitness_age = data.get("fitnessAge").and_then(|v| v.as_f64());
         let chrono_age = data.get("chronologicalAge").and_then(|v| v.as_f64());
         if let (Some(fa), Some(ca)) = (fitness_age, chrono_age) {
@@ -1255,21 +1500,33 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
     }
 
     // Training Status
-    let status_path = format!("/metrics-service/metrics/trainingstatus/aggregated/{}", date);
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &status_path).await {
+    let status_path = format!(
+        "/metrics-service/metrics/trainingstatus/aggregated/{}",
+        date
+    );
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &status_path)
+        .await
+    {
         let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
         if let Some(status) = entry.get("trainingStatusPhrase").and_then(|v| v.as_str()) {
             println!("Training Status:     {}", status);
         }
         if let Some(load) = entry.get("weeklyTrainingLoad").and_then(|v| v.as_f64()) {
-            let load_status = entry.get("loadStatus").and_then(|v| v.as_str()).unwrap_or("");
+            let load_status = entry
+                .get("loadStatus")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             println!("Training Load:       {:.0} ({})", load, load_status);
         }
     }
 
     // Training Readiness
     let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &readiness_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &readiness_path)
+        .await
+    {
         let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
         if let Some(score) = entry.get("score").and_then(|v| v.as_i64()) {
             let level = entry.get("level").and_then(|v| v.as_str()).unwrap_or("");
@@ -1297,16 +1554,25 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
     let mut lt_pace: Option<String> = None;
     let mut lt_date: Option<String> = None;
 
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &lt_hr_range_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &lt_hr_range_path)
+        .await
+    {
         if let Some(arr) = data.as_array() {
             if let Some(last) = arr.last() {
                 lt_hr = last.get("value").and_then(|v| v.as_f64()).map(|v| v as i64);
-                lt_date = last.get("from").and_then(|v| v.as_str()).map(|s| s.to_string());
+                lt_date = last
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
         }
     }
 
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &lt_speed_range_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &lt_speed_range_path)
+        .await
+    {
         if let Some(arr) = data.as_array() {
             if let Some(last) = arr.last() {
                 if let Some(speed) = last.get("value").and_then(|v| v.as_f64()) {
@@ -1336,9 +1602,13 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 
     let end_path = format!(
         "/metrics-service/metrics/endurancescore?startDate={}&endDate={}&aggregation=daily",
-        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+        start.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
     );
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &end_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &end_path)
+        .await
+    {
         if let Some(arr) = data.as_array() {
             if let Some(last) = arr.last() {
                 let score = last.get("overallScore").and_then(|v| v.as_i64());
@@ -1352,9 +1622,13 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 
     let hill_path = format!(
         "/metrics-service/metrics/hillscore?startDate={}&endDate={}&aggregation=daily",
-        start.format("%Y-%m-%d"), today.format("%Y-%m-%d")
+        start.format("%Y-%m-%d"),
+        today.format("%Y-%m-%d")
     );
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &hill_path).await {
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &hill_path)
+        .await
+    {
         if let Some(arr) = data.as_array() {
             if let Some(last) = arr.last() {
                 let score = last.get("overallScore").and_then(|v| v.as_i64());
@@ -1371,8 +1645,14 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
     println!("Race Predictions");
     println!("{}", "-".repeat(30));
 
-    let race_path = format!("/metrics-service/metrics/racepredictions/latest/{}", display_name);
-    match client.get_json::<serde_json::Value>(&oauth2, &race_path).await {
+    let race_path = format!(
+        "/metrics-service/metrics/racepredictions/latest/{}",
+        display_name
+    );
+    match client
+        .get_json::<serde_json::Value>(&oauth2, &race_path)
+        .await
+    {
         Ok(data) => {
             let races = [
                 ("time5K", "5K", 5.0),
@@ -1399,18 +1679,27 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
     println!("Personal Records");
     println!("{}", "-".repeat(30));
 
-    let pr_path = format!("/personalrecord-service/personalrecord/prs/{}", display_name);
-    if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &pr_path).await {
+    let pr_path = format!(
+        "/personalrecord-service/personalrecord/prs/{}",
+        display_name
+    );
+    if let Ok(data) = client
+        .get_json::<serde_json::Value>(&oauth2, &pr_path)
+        .await
+    {
         // Time-based record type IDs: 3=5K, 4=10K, 5=HM, 6=Marathon
         let time_types = [3_i64, 4, 5, 6];
-        let type_names: std::collections::HashMap<i64, &str> = [
-            (3, "5K"), (4, "10K"), (5, "Half Marathon"), (6, "Marathon"),
-        ].into_iter().collect();
+        let type_names: std::collections::HashMap<i64, &str> =
+            [(3, "5K"), (4, "10K"), (5, "Half Marathon"), (6, "Marathon")]
+                .into_iter()
+                .collect();
 
         if let Some(records) = data.as_array() {
             let mut shown = 0;
             for record in records {
-                if shown >= 4 { break; }
+                if shown >= 4 {
+                    break;
+                }
                 let type_id = record.get("typeId").and_then(|v| v.as_i64()).unwrap_or(0);
                 if time_types.contains(&type_id) {
                     if let Some(v) = record.get("value").and_then(|v| v.as_f64()) {
@@ -1438,7 +1727,10 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
     let client = GarminClient::new(&oauth1.domain);
     let display_name = get_display_name(&client, &oauth2).await?;
 
-    let path = format!("/personalrecord-service/personalrecord/prs/{}", display_name);
+    let path = format!(
+        "/personalrecord-service/personalrecord/prs/{}",
+        display_name
+    );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
 
@@ -1460,7 +1752,9 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
         (14, ("Most Steps (Month)", "steps")),
         (17, ("Longest Swim", "distance_m")),
         (18, ("Fastest 100m Swim", "time")),
-    ].into_iter().collect();
+    ]
+    .into_iter()
+    .collect();
 
     if let Some(records) = data.as_array() {
         if records.is_empty() {
@@ -1472,22 +1766,39 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
             let type_id = record.get("typeId").and_then(|v| v.as_i64()).unwrap_or(0);
             let value = record.get("value").and_then(|v| v.as_f64());
             let activity_name = record.get("activityName").and_then(|v| v.as_str());
-            let date = record.get("actStartDateTimeInGMTFormatted").and_then(|v| v.as_str())
+            let date = record
+                .get("actStartDateTimeInGMTFormatted")
+                .and_then(|v| v.as_str())
                 .map(|d| d.split('T').next().unwrap_or(d))
                 .unwrap_or("-");
 
             if let Some((name, format_type)) = type_names.get(&type_id) {
                 let formatted_value = match *format_type {
-                    "time" => value.map(|v| format_race_time(v)).unwrap_or("-".to_string()),
-                    "distance" => value.map(|v| format!("{:.2} km", v / 1000.0)).unwrap_or("-".to_string()),
-                    "distance_m" => value.map(|v| format!("{:.0} m", v)).unwrap_or("-".to_string()),
-                    "elevation" => value.map(|v| format!("{:.0} m", v)).unwrap_or("-".to_string()),
-                    "steps" => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string()),
-                    _ => value.map(|v| format!("{:.0}", v)).unwrap_or("-".to_string())
+                    "time" => value
+                        .map(|v| format_race_time(v))
+                        .unwrap_or("-".to_string()),
+                    "distance" => value
+                        .map(|v| format!("{:.2} km", v / 1000.0))
+                        .unwrap_or("-".to_string()),
+                    "distance_m" => value
+                        .map(|v| format!("{:.0} m", v))
+                        .unwrap_or("-".to_string()),
+                    "elevation" => value
+                        .map(|v| format!("{:.0} m", v))
+                        .unwrap_or("-".to_string()),
+                    "steps" => value
+                        .map(|v| format!("{:.0}", v))
+                        .unwrap_or("-".to_string()),
+                    _ => value
+                        .map(|v| format!("{:.0}", v))
+                        .unwrap_or("-".to_string()),
                 };
 
                 let activity = activity_name.unwrap_or("-");
-                println!("{:<22} {:>12}  {}  {}", name, formatted_value, date, activity);
+                println!(
+                    "{:<22} {:>12}  {}  {}",
+                    name, formatted_value, date, activity
+                );
             }
         }
     }
@@ -1518,10 +1829,20 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
 
         if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &path).await {
             let sleep_dto = data.get("dailySleepDTO").unwrap_or(&data);
-            let total = sleep_dto.get("sleepTimeSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
-            let deep = sleep_dto.get("deepSleepSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
-            let rem = sleep_dto.get("remSleepSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
-            let score = sleep_dto.get("sleepScores")
+            let total = sleep_dto
+                .get("sleepTimeSeconds")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let deep = sleep_dto
+                .get("deepSleepSeconds")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let rem = sleep_dto
+                .get("remSleepSeconds")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let score = sleep_dto
+                .get("sleepScores")
                 .and_then(|s| s.get("overall"))
                 .and_then(|o| o.get("value"))
                 .and_then(|v| v.as_i64())
@@ -1539,7 +1860,10 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
         let path = format!("/wellness-service/wellness/dailyStress/{}", date);
 
         if let Ok(data) = client.get_json::<serde_json::Value>(&oauth2, &path).await {
-            let avg = data.get("avgStressLevel").and_then(|v| v.as_i64()).unwrap_or(0);
+            let avg = data
+                .get("avgStressLevel")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             if avg > 0 {
                 stress_data.push((date.to_string(), avg));
             }
@@ -1548,7 +1872,10 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
 
     // Calculate insights
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║                     HEALTH INSIGHTS ({} days)                     ║", days);
+    println!(
+        "║                     HEALTH INSIGHTS ({} days)                     ║",
+        days
+    );
     println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
 
@@ -1568,13 +1895,25 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
         }
     }
 
-    let avg_ratio = if count > 0 { total_ratio / count as f64 } else { 0.0 };
+    let avg_ratio = if count > 0 {
+        total_ratio / count as f64
+    } else {
+        0.0
+    };
 
-    let ratio_status = if last_night_ratio < 30.0 { "⚠️" } else if last_night_ratio > 45.0 { "✓" } else { "" };
+    let ratio_status = if last_night_ratio < 30.0 {
+        "⚠️"
+    } else if last_night_ratio > 45.0 {
+        "✓"
+    } else {
+        ""
+    };
 
     println!("🧠 RESTORATIVE SLEEP RATIO");
-    println!("   Your avg: {:.0}%  |  Target: >45%  |  Last night: {:.0}% {}",
-        avg_ratio, last_night_ratio, ratio_status);
+    println!(
+        "   Your avg: {:.0}%  |  Target: >45%  |  Last night: {:.0}% {}",
+        avg_ratio, last_night_ratio, ratio_status
+    );
     println!();
 
     // 2. Sleep-Stress Correlation
@@ -1610,10 +1949,16 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
 
     println!("😰 STRESS CORRELATION");
     if !low_restorative_stress.is_empty() {
-        println!("   Low restorative (<30%) → avg next-day stress: {:.0}", low_avg);
+        println!(
+            "   Low restorative (<30%) → avg next-day stress: {:.0}",
+            low_avg
+        );
     }
     if !high_restorative_stress.is_empty() {
-        println!("   High restorative (>45%) → avg next-day stress: {:.0}", high_avg);
+        println!(
+            "   High restorative (>45%) → avg next-day stress: {:.0}",
+            high_avg
+        );
     }
     if low_restorative_stress.is_empty() && high_restorative_stress.is_empty() {
         println!("   (Insufficient data for correlation)");
@@ -1632,7 +1977,10 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
     let last_night_restorative = if !sleep_data.is_empty() {
         let (_, total, deep, rem, _) = &sleep_data[0];
         let restorative_mins = (*deep + *rem) / 60;
-        format!("{}m restorative, {:.0}%", restorative_mins, last_night_ratio)
+        format!(
+            "{}m restorative, {:.0}%",
+            restorative_mins, last_night_ratio
+        )
     } else {
         "no data".to_string()
     };
@@ -1644,9 +1992,14 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
 
     // 4. Best/Worst Days
     if sleep_data.len() >= 3 {
-        let mut sleep_with_ratio: Vec<(&str, f64, i64)> = sleep_data.iter()
+        let mut sleep_with_ratio: Vec<(&str, f64, i64)> = sleep_data
+            .iter()
             .map(|(date, total, deep, rem, score)| {
-                let ratio = if *total > 0 { (*deep + *rem) as f64 / *total as f64 * 100.0 } else { 0.0 };
+                let ratio = if *total > 0 {
+                    (*deep + *rem) as f64 / *total as f64 * 100.0
+                } else {
+                    0.0
+                };
                 (date.as_str(), ratio, *score)
             })
             .collect();
@@ -1654,14 +2007,17 @@ pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
         sleep_with_ratio.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         println!("📊 SLEEP QUALITY RANKING (by restorative %)");
-        println!("   Best:  {} ({:.0}% restorative, score {})",
-            sleep_with_ratio[0].0, sleep_with_ratio[0].1, sleep_with_ratio[0].2);
-        println!("   Worst: {} ({:.0}% restorative, score {})",
+        println!(
+            "   Best:  {} ({:.0}% restorative, score {})",
+            sleep_with_ratio[0].0, sleep_with_ratio[0].1, sleep_with_ratio[0].2
+        );
+        println!(
+            "   Worst: {} ({:.0}% restorative, score {})",
             sleep_with_ratio.last().unwrap().0,
             sleep_with_ratio.last().unwrap().1,
-            sleep_with_ratio.last().unwrap().2);
+            sleep_with_ratio.last().unwrap().2
+        );
     }
 
     Ok(())
 }
-

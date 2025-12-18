@@ -73,8 +73,7 @@ impl SsoClient {
         let ticket = match login_result {
             LoginResult::Success(ticket) => ticket,
             LoginResult::MfaRequired => {
-                let mfa_code = mfa_callback
-                    .ok_or_else(|| GarminError::MfaRequired)?();
+                let mfa_code = mfa_callback.ok_or_else(|| GarminError::MfaRequired)?();
                 self.submit_mfa(&mfa_code, &csrf_token).await?
             }
         };
@@ -100,7 +99,8 @@ impl SsoClient {
             ("gauthHost", sso_base.as_str()),
         ];
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&sso_embed)
             .query(&embed_params)
             .header(USER_AGENT, API_USER_AGENT)
@@ -198,7 +198,10 @@ impl SsoClient {
             let ticket = extract_ticket(&html)?;
             Ok(LoginResult::Success(ticket))
         } else {
-            Err(GarminError::auth(format!("Unexpected login response: {}", title)))
+            Err(GarminError::auth(format!(
+                "Unexpected login response: {}",
+                title
+            )))
         }
     }
 
@@ -247,7 +250,10 @@ impl SsoClient {
         if title == "Success" {
             extract_ticket(&html)
         } else {
-            Err(GarminError::auth(format!("MFA verification failed: {}", title)))
+            Err(GarminError::auth(format!(
+                "MFA verification failed: {}",
+                title
+            )))
         }
     }
 
@@ -256,10 +262,7 @@ impl SsoClient {
         // Fetch OAuth consumer credentials
         let consumer = self.fetch_oauth_consumer().await?;
 
-        let base_url = format!(
-            "https://connectapi.{}/oauth-service/oauth/",
-            self.domain
-        );
+        let base_url = format!("https://connectapi.{}/oauth-service/oauth/", self.domain);
         let login_url = format!("https://sso.{}/sso/embed", self.domain);
         let url = format!(
             "{}preauthorized?ticket={}&login-url={}&accepts-mfa-tokens=true",
@@ -311,8 +314,7 @@ impl SsoClient {
             .clone();
         let mfa_token = params.get("mfa_token").cloned();
 
-        let mut token = OAuth1Token::new(oauth_token, oauth_token_secret)
-            .with_domain(&self.domain);
+        let mut token = OAuth1Token::new(oauth_token, oauth_token_secret).with_domain(&self.domain);
 
         if let Some(mfa) = mfa_token {
             token = token.with_mfa(mfa, None);
@@ -375,8 +377,9 @@ impl SsoClient {
             )));
         }
 
-        let mut token: OAuth2Token = response.json().await
-            .map_err(|e| GarminError::invalid_response(format!("Failed to parse OAuth2 token: {}", e)))?;
+        let mut token: OAuth2Token = response.json().await.map_err(|e| {
+            GarminError::invalid_response(format!("Failed to parse OAuth2 token: {}", e))
+        })?;
 
         // Set expiration timestamps
         let now = SystemTime::now()
@@ -398,10 +401,9 @@ impl SsoClient {
             .await
             .map_err(GarminError::Http)?;
 
-        response
-            .json()
-            .await
-            .map_err(|e| GarminError::invalid_response(format!("Failed to parse OAuth consumer: {}", e)))
+        response.json().await.map_err(|e| {
+            GarminError::invalid_response(format!("Failed to parse OAuth consumer: {}", e))
+        })
     }
 
     /// Refresh OAuth2 token using OAuth1 token

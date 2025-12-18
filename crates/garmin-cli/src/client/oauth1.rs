@@ -76,12 +76,7 @@ impl OAuth1Signer {
     ///
     /// The URL can include query parameters - they will be properly extracted
     /// and included in the signature calculation per OAuth1 spec.
-    pub fn sign(
-        &self,
-        method: &str,
-        url: &str,
-        extra_params: &[(String, String)],
-    ) -> String {
+    pub fn sign(&self, method: &str, url: &str, extra_params: &[(String, String)]) -> String {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -120,7 +115,10 @@ impl OAuth1Signer {
         let mut oauth_params: BTreeMap<String, String> = BTreeMap::new();
         oauth_params.insert("oauth_consumer_key".to_string(), self.consumer.key.clone());
         oauth_params.insert("oauth_nonce".to_string(), nonce.to_string());
-        oauth_params.insert("oauth_signature_method".to_string(), "HMAC-SHA1".to_string());
+        oauth_params.insert(
+            "oauth_signature_method".to_string(),
+            "HMAC-SHA1".to_string(),
+        );
         oauth_params.insert("oauth_timestamp".to_string(), timestamp.to_string());
         oauth_params.insert("oauth_version".to_string(), "1.0".to_string());
 
@@ -130,7 +128,8 @@ impl OAuth1Signer {
 
         // Calculate signature using base URL (without query params)
         // but including all params (URL query + extra + oauth) in signature
-        let signature = self.calculate_signature(method, &base_url, &url_params, extra_params, &oauth_params);
+        let signature =
+            self.calculate_signature(method, &base_url, &url_params, extra_params, &oauth_params);
         oauth_params.insert("oauth_signature".to_string(), signature);
 
         // Build Authorization header
@@ -175,12 +174,12 @@ impl OAuth1Signer {
         );
 
         // Build signing key: consumer_secret&token_secret
-        let token_secret = self
-            .token
-            .as_ref()
-            .map(|t| t.secret.as_str())
-            .unwrap_or("");
-        let signing_key = format!("{}&{}", percent_encode(&self.consumer.secret), percent_encode(token_secret));
+        let token_secret = self.token.as_ref().map(|t| t.secret.as_str()).unwrap_or("");
+        let signing_key = format!(
+            "{}&{}",
+            percent_encode(&self.consumer.secret),
+            percent_encode(token_secret)
+        );
 
         // Calculate HMAC-SHA1
         let mut mac = Hmac::<Sha1>::new_from_slice(signing_key.as_bytes())
@@ -189,7 +188,10 @@ impl OAuth1Signer {
         let result = mac.finalize();
 
         // Base64 encode
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, result.into_bytes())
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            result.into_bytes(),
+        )
     }
 }
 
@@ -322,7 +324,10 @@ mod tests {
         let parsed = parse_oauth_response(response);
 
         assert_eq!(parsed.get("oauth_token"), Some(&"abc123".to_string()));
-        assert_eq!(parsed.get("oauth_token_secret"), Some(&"xyz789".to_string()));
+        assert_eq!(
+            parsed.get("oauth_token_secret"),
+            Some(&"xyz789".to_string())
+        );
         assert_eq!(parsed.get("mfa_token"), Some(&"mfa456".to_string()));
     }
 
@@ -360,13 +365,8 @@ mod tests {
         // URL with query parameters
         let url = "http://photos.example.net/photos?file=vacation.jpg&size=original";
 
-        let auth_header = signer.sign_with_timestamp_nonce(
-            "GET",
-            url,
-            &[],
-            "1191242096",
-            "kllo9940pd9333jh",
-        );
+        let auth_header =
+            signer.sign_with_timestamp_nonce("GET", url, &[], "1191242096", "kllo9940pd9333jh");
 
         // The signature should include both URL params and OAuth params
         assert!(auth_header.contains("oauth_signature="));
@@ -388,15 +388,11 @@ mod tests {
         let signer = OAuth1Signer::new(consumer);
 
         // Test with URL containing query params
-        let url = "https://api.example.com/path?ticket=ST-123&login-url=https://sso.example.com/embed";
+        let url =
+            "https://api.example.com/path?ticket=ST-123&login-url=https://sso.example.com/embed";
 
-        let auth_header = signer.sign_with_timestamp_nonce(
-            "GET",
-            url,
-            &[],
-            "1234567890",
-            "testnonce",
-        );
+        let auth_header =
+            signer.sign_with_timestamp_nonce("GET", url, &[], "1234567890", "testnonce");
 
         // Should produce a valid OAuth header
         assert!(auth_header.starts_with("OAuth "));

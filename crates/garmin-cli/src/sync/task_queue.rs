@@ -146,9 +146,9 @@ impl TaskQueue {
 
     /// Recover tasks that were in progress (crashed)
     pub fn recover_in_progress(&self) -> Result<u32> {
-        let count = self.db.execute(
-            "UPDATE sync_tasks SET status = 'pending' WHERE status = 'in_progress'",
-        )?;
+        let count = self
+            .db
+            .execute("UPDATE sync_tasks SET status = 'pending' WHERE status = 'in_progress'")?;
         Ok(count as u32)
     }
 
@@ -193,9 +193,9 @@ impl TaskQueue {
 
     /// Clear all pending and failed tasks
     pub fn clear_pending(&self) -> Result<u32> {
-        let count = self.db.execute(
-            "DELETE FROM sync_tasks WHERE status IN ('pending', 'failed')",
-        )?;
+        let count = self
+            .db
+            .execute("DELETE FROM sync_tasks WHERE status IN ('pending', 'failed')")?;
         Ok(count as u32)
     }
 }
@@ -227,7 +227,13 @@ mod tests {
     fn test_push_and_pop() {
         let queue = setup();
 
-        let task = SyncTask::new(1, SyncTaskType::Activities { start: 0, limit: 50 });
+        let task = SyncTask::new(
+            1,
+            SyncTaskType::Activities {
+                start: 0,
+                limit: 50,
+            },
+        );
         let id = queue.push(task).unwrap();
         assert!(id > 0);
 
@@ -241,7 +247,13 @@ mod tests {
     fn test_mark_completed() {
         let queue = setup();
 
-        let task = SyncTask::new(1, SyncTaskType::Activities { start: 0, limit: 50 });
+        let task = SyncTask::new(
+            1,
+            SyncTaskType::Activities {
+                start: 0,
+                limit: 50,
+            },
+        );
         let id = queue.push(task).unwrap();
 
         queue.mark_in_progress(id).unwrap();
@@ -258,10 +270,23 @@ mod tests {
 
         assert_eq!(queue.pending_count().unwrap(), 0);
 
-        queue.push(SyncTask::new(1, SyncTaskType::Activities { start: 0, limit: 50 })).unwrap();
-        queue.push(SyncTask::new(1, SyncTaskType::DailyHealth {
-            date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()
-        })).unwrap();
+        queue
+            .push(SyncTask::new(
+                1,
+                SyncTaskType::Activities {
+                    start: 0,
+                    limit: 50,
+                },
+            ))
+            .unwrap();
+        queue
+            .push(SyncTask::new(
+                1,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                },
+            ))
+            .unwrap();
 
         assert_eq!(queue.pending_count().unwrap(), 2);
     }
@@ -270,7 +295,13 @@ mod tests {
     fn test_recover_in_progress() {
         let queue = setup();
 
-        let task = SyncTask::new(1, SyncTaskType::Activities { start: 0, limit: 50 });
+        let task = SyncTask::new(
+            1,
+            SyncTaskType::Activities {
+                start: 0,
+                limit: 50,
+            },
+        );
         let id = queue.push(task).unwrap();
         queue.mark_in_progress(id).unwrap();
 
