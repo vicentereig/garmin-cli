@@ -155,10 +155,29 @@ garmin profile settings
 
 ## Sync Commands
 
+Sync your Garmin data to a local DuckDB database for offline analysis and querying.
+
 ```bash
-# Sync activities to local database
+# Sync all data (activities, health, performance) for the last 7 days
 garmin sync run
-garmin sync run --days 30
+
+# Sync specific date range
+garmin sync run --from 2025-01-01 --to 2025-12-31
+
+# Sync only activities
+garmin sync run --activities
+
+# Sync only health data
+garmin sync run --health
+
+# Sync only performance metrics
+garmin sync run --performance
+
+# Dry run (preview what will be synced)
+garmin sync run --dry-run
+
+# Use simple text output instead of TUI
+garmin sync run --simple
 
 # Check sync status
 garmin sync status
@@ -169,6 +188,45 @@ garmin sync reset
 # Clear pending sync tasks
 garmin sync clear
 ```
+
+### Database Location
+
+By default, synced data is stored in a DuckDB database at:
+- **macOS:** `~/Library/Application Support/garmin/garmin.duckdb`
+- **Linux:** `~/.local/share/garmin/garmin.duckdb`
+
+Use a custom database path:
+```bash
+garmin sync run --db /path/to/custom.duckdb
+garmin sync status --db /path/to/custom.duckdb
+```
+
+### Querying with DuckDB
+
+You can query your synced data directly using the DuckDB CLI:
+
+```bash
+# Install DuckDB CLI
+brew install duckdb  # macOS
+# or download from https://duckdb.org
+
+# Open the database
+duckdb ~/Library/Application\ Support/garmin/garmin.duckdb
+
+# Example queries
+SELECT * FROM activities ORDER BY start_time DESC LIMIT 10;
+SELECT * FROM daily_health WHERE date >= '2025-01-01';
+SELECT device_name, COUNT(*) as activity_count FROM activities GROUP BY device_name;
+```
+
+### Database Schema
+
+The sync creates several tables:
+- `activities` - Activity summaries (runs, rides, etc.)
+- `track_points` - GPS track points for activities
+- `daily_health` - Daily health metrics (sleep, stress, HRV, etc.)
+- `profiles` - User profile data
+- `sync_tasks` - Internal sync task tracking
 
 ## Output Formats
 
