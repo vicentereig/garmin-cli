@@ -1,0 +1,105 @@
+{
+  "heatAltitudeAcclimationDTO": null,
+  "mostRecentTrainingLoadBalance": {
+    "metricsTrainingLoadBalanceDTOMap": {
+      "3442975663": {
+        "calendarDate": "2025-12-14",
+        "deviceId": 3442975663,
+        "monthlyLoadAerobicHigh": 576.51,
+        "monthlyLoadAerobicHighTargetMax": 671,
+        "monthlyLoadAerobicHighTargetMin": 343,
+        "monthlyLoadAerobicLow": 323.86,
+        "monthlyLoadAerobicLowTargetMax": 584,
+        "monthlyLoadAerobicLowTargetMin": 256,
+        "monthlyLoadAnaerobic": 28.39,
+        "monthlyLoadAnaerobicTargetMax": 327,
+        "monthlyLoadAnaerobicTargetMin": 109,
+        "primaryTrainingDevice": true,
+        "trainingBalanceFeedbackPhrase": "ANAEROBIC_SHORTAGE"
+      }
+    },
+    "recordedDevices": [
+      {
+        "category": 0,
+        "deviceId": 3442975663,
+        "deviceName": "Forerunner 955 Solar",
+        "imageURL": "https://res.garmin.com/en/products/010-02638-20/v/c1_01_md.png"
+      }
+    ],
+    "userId": 29496888
+  },
+  "mostRecentTrainingStatus": {
+    "lastPrimarySyncDate": "2025-12-14",
+    "latestTrainingStatusData": {
+      "3442975663": {
+        "acuteTrainingLoadDTO": {
+          "acwrPercent": 47,
+          "acwrStatus": "OPTIMAL",
+          "acwrStatusFeedback": "FEEDBACK_2",
+          "dailyAcuteChronicWorkloadRatio": 1.1,
+          "dailyTrainingLoadAcute": 268,
+          "dailyTrainingLoadChronic": 240,
+          "maxTrainingLoadChronic": 360.0,
+          "minTrainingLoadChronic": 192.0
+        },
+        "calendarDate": "2025-12-14",
+        "deviceId": 3442975663,
+        "fitnessTrend": 1,
+        "fitnessTrendSport": "RUNNING",
+        "loadLevelTrend": null,
+        "loadTunnelMax": null,
+        "loadTunnelMin": null,
+        "primaryTrainingDevice": true,
+        "sinceDate": "2025-12-13",
+        "sport": "RUNNING",
+        "subSport": "GENERIC",
+        "timestamp": 1765725130000,
+        "trainingPaused": false,
+        "trainingStatus": 2,
+        "trainingStatusFeedbackPhrase": "UNPRODUCTIVE_4",
+        "weeklyTrainingLoad": null
+      }
+    },
+    "recordedDevices": [
+      {
+        "category": 0,
+        "deviceId": 3442975663,
+        "deviceName": "Forerunner 955 Solar",
+        "imageURL": "https://res.garmin.com/en/products/010-02638-20/v/c1_01_md.png"
+      }
+    ],
+    "showSelector": false,
+    "userId": 29496888
+  },
+  "mostRecentVO2Max": {
+    "cycling": null,
+    "generic": {
+      "calendarDate": "2025-12-12",
+      "fitnessAge": null,
+      "fitnessAgeDescription": null,
+      "maxMetCategory": 0,
+      "vo2MaxPreciseValue": 53.0,
+      "vo2MaxValue": 53.0
+    },
+    "heatAltitudeAcclimation": {
+      "acclimationPercentage": 0,
+      "altitudeAcclimation": 0,
+      "altitudeAcclimationDate": "2025-12-14",
+      "altitudeAcclimationLocalTimestamp": "2025-12-14T23:54:58.0",
+      "altitudeTrend": null,
+      "calendarDate": "2025-12-14",
+      "currentAltitude": 76,
+      "heatAcclimationDate": "2025-12-14",
+      "heatAcclimationPercentage": 0,
+      "heatTrend": null,
+      "previousAcclimationPercentage": 0,
+      "previousAltitude": 0,
+      "previousAltitudeAcclimation": 0,
+      "previousAltitudeAcclimationDate": "2025-12-14",
+      "previousHeatAcclimationDate": "2025-12-14",
+      "previousHeatAcclimationPercentage": 0
+    },
+    "userId": 29496888
+  },
+  "userId": 29496888
+}

@@ -16,7 +16,8 @@ pub use health::{
     blood_pressure, body_battery, body_battery_range, calories, endurance_score, fitness_age,
     heart_rate, hill_score, hrv, hydration, insights, intensity_minutes, lactate_threshold,
     performance_summary, personal_records, race_predictions, respiration, sleep, sleep_range, spo2,
-    steps, stress, stress_range, summary, training_readiness, training_status, vo2max,
+    steps, stress, stress_range, summary, training_readiness, training_readiness_range,
+    training_status, training_status_range, vo2max,
 };
 pub use profile::{settings as show_settings, show as show_profile};
 pub use sync::{clear as sync_clear, reset as sync_reset, run as sync_run, status as sync_status};

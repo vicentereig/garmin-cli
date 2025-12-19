@@ -678,35 +678,270 @@ pub async fn training_status(date: Option<String>, profile: Option<String>) -> R
     println!("Training Status for {}", date);
     println!("{}", "-".repeat(40));
 
-    // Get first entry if array
-    let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+    // Extract training status from nested structure
+    if let Some(status_data) = data
+        .get("mostRecentTrainingStatus")
+        .and_then(|s| s.get("latestTrainingStatusData"))
+        .and_then(|d| d.as_object())
+        .and_then(|m| m.values().next())
+    {
+        // Training status phrase
+        if let Some(phrase) = status_data
+            .get("trainingStatusFeedbackPhrase")
+            .and_then(|v| v.as_str())
+        {
+            let display = phrase.replace('_', " ").to_lowercase();
+            println!("Status:          {}", display);
+        }
 
-    if let Some(status) = entry.get("trainingStatusPhrase").and_then(|v| v.as_str()) {
-        println!("Status:          {}", status);
+        // Acute training load data
+        if let Some(load_dto) = status_data.get("acuteTrainingLoadDTO") {
+            if let Some(acute) = load_dto
+                .get("dailyTrainingLoadAcute")
+                .and_then(|v| v.as_f64())
+            {
+                println!("Acute Load:      {:.0}", acute);
+            }
+            if let Some(chronic) = load_dto
+                .get("dailyTrainingLoadChronic")
+                .and_then(|v| v.as_f64())
+            {
+                println!("Chronic Load:    {:.0}", chronic);
+            }
+            if let Some(ratio) = load_dto
+                .get("dailyAcuteChronicWorkloadRatio")
+                .and_then(|v| v.as_f64())
+            {
+                let status = load_dto
+                    .get("acwrStatus")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                println!("Load Ratio:      {:.2} ({})", ratio, status);
+            }
+        }
     }
 
-    if let Some(load) = entry.get("weeklyTrainingLoad").and_then(|v| v.as_f64()) {
-        println!("Weekly Load:     {:.0}", load);
+    // Extract load balance (focus) from nested structure
+    if let Some(balance_data) = data
+        .get("mostRecentTrainingLoadBalance")
+        .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
+        .and_then(|m| m.as_object())
+        .and_then(|m| m.values().next())
+    {
+        println!();
+        println!("Load Focus");
+        println!("{}", "-".repeat(30));
+
+        if let Some(focus) = balance_data
+            .get("trainingBalanceFeedbackPhrase")
+            .and_then(|v| v.as_str())
+        {
+            let display = focus.replace('_', " ").to_lowercase();
+            println!("Focus:           {}", display);
+        }
+
+        if let Some(aero_high) = balance_data
+            .get("monthlyLoadAerobicHigh")
+            .and_then(|v| v.as_f64())
+        {
+            let min = balance_data
+                .get("monthlyLoadAerobicHighTargetMin")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let max = balance_data
+                .get("monthlyLoadAerobicHighTargetMax")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            println!(
+                "High Aerobic:    {:.0} (target: {:.0}-{:.0})",
+                aero_high, min, max
+            );
+        }
+
+        if let Some(aero_low) = balance_data
+            .get("monthlyLoadAerobicLow")
+            .and_then(|v| v.as_f64())
+        {
+            let min = balance_data
+                .get("monthlyLoadAerobicLowTargetMin")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let max = balance_data
+                .get("monthlyLoadAerobicLowTargetMax")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            println!(
+                "Low Aerobic:     {:.0} (target: {:.0}-{:.0})",
+                aero_low, min, max
+            );
+        }
+
+        if let Some(anaerobic) = balance_data
+            .get("monthlyLoadAnaerobic")
+            .and_then(|v| v.as_f64())
+        {
+            let min = balance_data
+                .get("monthlyLoadAnaerobicTargetMin")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let max = balance_data
+                .get("monthlyLoadAnaerobicTargetMax")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            println!(
+                "Anaerobic:       {:.0} (target: {:.0}-{:.0})",
+                anaerobic, min, max
+            );
+        }
     }
 
-    if let Some(load7) = entry.get("sevenDayLoad").and_then(|v| v.as_f64()) {
-        println!("7-Day Load:      {:.0}", load7);
-    }
-
-    if let Some(load_status) = entry.get("loadStatus").and_then(|v| v.as_str()) {
-        println!("Load Status:     {}", load_status);
-    }
-
-    if let Some(focus) = entry.get("trainingLoadBalance").and_then(|v| v.as_str()) {
-        println!("Focus:           {}", focus);
-    }
-
-    if let Some(vo2) = entry.get("mostRecentVO2Max").and_then(|v| v.as_f64()) {
+    // Extract VO2 max
+    if let Some(vo2) = data
+        .get("mostRecentVO2Max")
+        .and_then(|v| v.get("generic"))
+        .and_then(|g| g.get("vo2MaxValue"))
+        .and_then(|v| v.as_f64())
+    {
+        println!();
         println!("VO2 Max:         {:.1}", vo2);
     }
 
-    if let Some(chronic) = entry.get("chronicTrainingLoad").and_then(|v| v.as_f64()) {
-        println!("Chronic Load:    {:.0}", chronic);
+    Ok(())
+}
+
+/// Get training status for multiple days
+pub async fn training_status_range(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+
+    println!(
+        "{:<12} {:>8} {:>8} {:>8} {:>12}",
+        "Date", "Status", "Acute", "Chronic", "Ratio"
+    );
+    println!("{}", "-".repeat(54));
+
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        let path = format!(
+            "/metrics-service/metrics/trainingstatus/aggregated/{}",
+            date
+        );
+
+        match client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            Ok(data) => {
+                // Extract status phrase
+                let status = data
+                    .get("mostRecentTrainingStatus")
+                    .and_then(|s| s.get("latestTrainingStatusData"))
+                    .and_then(|d| d.as_object())
+                    .and_then(|m| m.values().next())
+                    .and_then(|entry| entry.get("trainingStatusFeedbackPhrase"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        // Extract just the key part (e.g., "PRODUCTIVE" from "PRODUCTIVE_2")
+                        s.split('_').next().unwrap_or(s).to_lowercase()
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+
+                // Extract load data
+                let (acute, chronic, ratio) = data
+                    .get("mostRecentTrainingStatus")
+                    .and_then(|s| s.get("latestTrainingStatusData"))
+                    .and_then(|d| d.as_object())
+                    .and_then(|m| m.values().next())
+                    .and_then(|entry| entry.get("acuteTrainingLoadDTO"))
+                    .map(|load| {
+                        let a = load
+                            .get("dailyTrainingLoadAcute")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| format!("{:.0}", v))
+                            .unwrap_or_else(|| "-".to_string());
+                        let c = load
+                            .get("dailyTrainingLoadChronic")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| format!("{:.0}", v))
+                            .unwrap_or_else(|| "-".to_string());
+                        let r = load
+                            .get("dailyAcuteChronicWorkloadRatio")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| format!("{:.2}", v))
+                            .unwrap_or_else(|| "-".to_string());
+                        (a, c, r)
+                    })
+                    .unwrap_or_else(|| ("-".to_string(), "-".to_string(), "-".to_string()));
+
+                println!(
+                    "{:<12} {:>8} {:>8} {:>8} {:>12}",
+                    date, status, acute, chronic, ratio
+                );
+            }
+            Err(_) => {
+                println!("{:<12} {:>8}", date, "-");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Get training readiness for multiple days
+pub async fn training_readiness_range(days: u32, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (oauth1, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new(&oauth1.domain);
+    let today = Local::now().date_naive();
+
+    println!(
+        "{:<12} {:>6} {:>8} {:>8} {:>6}",
+        "Date", "Score", "Level", "Acute", "HRV"
+    );
+    println!("{}", "-".repeat(46));
+
+    for i in 0..days {
+        let date = today - Duration::days(i as i64);
+        let path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
+
+        match client.get_json::<serde_json::Value>(&oauth2, &path).await {
+            Ok(data) => {
+                let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
+
+                let score = entry
+                    .get("score")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                let level = entry
+                    .get("level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_string();
+
+                let acute = entry
+                    .get("acuteLoad")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| format!("{:.0}", v))
+                    .unwrap_or_else(|| "-".to_string());
+
+                let hrv = entry
+                    .get("hrvWeeklyAverage")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+
+                println!(
+                    "{:<12} {:>6} {:>8} {:>8} {:>6}",
+                    date, score, level, acute, hrv
+                );
+            }
+            Err(_) => {
+                println!("{:<12} {:>6}", date, "-");
+            }
+        }
     }
 
     Ok(())
@@ -1508,16 +1743,59 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
         .get_json::<serde_json::Value>(&oauth2, &status_path)
         .await
     {
-        let entry = data.as_array().and_then(|arr| arr.first()).unwrap_or(&data);
-        if let Some(status) = entry.get("trainingStatusPhrase").and_then(|v| v.as_str()) {
-            println!("Training Status:     {}", status);
-        }
-        if let Some(load) = entry.get("weeklyTrainingLoad").and_then(|v| v.as_f64()) {
-            let load_status = entry
-                .get("loadStatus")
+        // Extract from nested structure
+        if let Some(status_data) = data
+            .get("mostRecentTrainingStatus")
+            .and_then(|s| s.get("latestTrainingStatusData"))
+            .and_then(|d| d.as_object())
+            .and_then(|m| m.values().next())
+        {
+            if let Some(phrase) = status_data
+                .get("trainingStatusFeedbackPhrase")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
-            println!("Training Load:       {:.0} ({})", load, load_status);
+            {
+                let display = phrase.replace('_', " ").to_lowercase();
+                println!("Training Status:     {}", display);
+            }
+
+            if let Some(load_dto) = status_data.get("acuteTrainingLoadDTO") {
+                let acute = load_dto
+                    .get("dailyTrainingLoadAcute")
+                    .and_then(|v| v.as_f64());
+                let chronic = load_dto
+                    .get("dailyTrainingLoadChronic")
+                    .and_then(|v| v.as_f64());
+                let ratio = load_dto
+                    .get("dailyAcuteChronicWorkloadRatio")
+                    .and_then(|v| v.as_f64());
+                let status = load_dto
+                    .get("acwrStatus")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if let (Some(a), Some(c), Some(r)) = (acute, chronic, ratio) {
+                    println!(
+                        "Training Load:       {:.0} acute / {:.0} chronic (ratio: {:.2} {})",
+                        a, c, r, status
+                    );
+                }
+            }
+        }
+
+        // Load Focus
+        if let Some(balance_data) = data
+            .get("mostRecentTrainingLoadBalance")
+            .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.values().next())
+        {
+            if let Some(focus) = balance_data
+                .get("trainingBalanceFeedbackPhrase")
+                .and_then(|v| v.as_str())
+            {
+                let display = focus.replace('_', " ").to_lowercase();
+                println!("Load Focus:          {}", display);
+            }
         }
     }
 

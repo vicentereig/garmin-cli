@@ -812,6 +812,22 @@ impl SyncEngine {
             .await
             .ok();
 
+        // Fetch training readiness
+        let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
+        let training_readiness: Option<serde_json::Value> = self
+            .client
+            .get_json(&self.token, &readiness_path)
+            .await
+            .ok();
+
+        // Fetch training status (includes load data)
+        let status_path = format!(
+            "/metrics-service/metrics/trainingstatus/aggregated/{}",
+            date
+        );
+        let training_status: Option<serde_json::Value> =
+            self.client.get_json(&self.token, &status_path).await.ok();
+
         let conn = self.db.connection();
         let conn = conn.lock().unwrap();
 
@@ -827,6 +843,65 @@ impl SyncEngine {
             .and_then(|v| v.get("fitnessAge"))
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
+
+        // Extract training readiness
+        let readiness_entry = training_readiness
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first());
+
+        let readiness_score = readiness_entry
+            .and_then(|e| e.get("score"))
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        let readiness_level = readiness_entry
+            .and_then(|e| e.get("level"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Extract training status from nested structure
+        let status_data = training_status
+            .as_ref()
+            .and_then(|v| v.get("mostRecentTrainingStatus"))
+            .and_then(|s| s.get("latestTrainingStatusData"))
+            .and_then(|d| d.as_object())
+            .and_then(|m| m.values().next());
+
+        let status_phrase = status_data
+            .and_then(|e| e.get("trainingStatusFeedbackPhrase"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let load_dto = status_data.and_then(|e| e.get("acuteTrainingLoadDTO"));
+
+        let acute_load = load_dto
+            .and_then(|l| l.get("dailyTrainingLoadAcute"))
+            .and_then(|v| v.as_f64());
+
+        let chronic_load = load_dto
+            .and_then(|l| l.get("dailyTrainingLoadChronic"))
+            .and_then(|v| v.as_f64());
+
+        let load_ratio = load_dto
+            .and_then(|l| l.get("dailyAcuteChronicWorkloadRatio"))
+            .and_then(|v| v.as_f64());
+
+        let load_ratio_status = load_dto
+            .and_then(|l| l.get("acwrStatus"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Extract load focus
+        let load_focus = training_status
+            .as_ref()
+            .and_then(|v| v.get("mostRecentTrainingLoadBalance"))
+            .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.values().next())
+            .and_then(|e| e.get("trainingBalanceFeedbackPhrase"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let race_5k = race_predictions
             .as_ref()
@@ -855,11 +930,22 @@ impl SyncEngine {
         conn.execute(
             "INSERT INTO performance_metrics (
                 profile_id, date, vo2max, fitness_age,
+                training_readiness, training_readiness_level,
+                training_status, acute_load, chronic_load,
+                load_ratio, load_ratio_status, load_focus,
                 race_5k_sec, race_10k_sec, race_half_sec, race_marathon_sec
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (profile_id, date) DO UPDATE SET
                 vo2max = EXCLUDED.vo2max,
                 fitness_age = EXCLUDED.fitness_age,
+                training_readiness = EXCLUDED.training_readiness,
+                training_readiness_level = EXCLUDED.training_readiness_level,
+                training_status = EXCLUDED.training_status,
+                acute_load = EXCLUDED.acute_load,
+                chronic_load = EXCLUDED.chronic_load,
+                load_ratio = EXCLUDED.load_ratio,
+                load_ratio_status = EXCLUDED.load_ratio_status,
+                load_focus = EXCLUDED.load_focus,
                 race_5k_sec = EXCLUDED.race_5k_sec,
                 race_10k_sec = EXCLUDED.race_10k_sec,
                 race_half_sec = EXCLUDED.race_half_sec,
@@ -869,6 +955,14 @@ impl SyncEngine {
                 date.to_string(),
                 vo2max_value,
                 fitness_age,
+                readiness_score,
+                readiness_level,
+                status_phrase,
+                acute_load,
+                chronic_load,
+                load_ratio,
+                load_ratio_status,
+                load_focus,
                 race_5k,
                 race_10k,
                 race_half,

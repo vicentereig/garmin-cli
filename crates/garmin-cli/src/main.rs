@@ -171,12 +171,18 @@ enum HealthCommands {
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(short, long)]
         date: Option<String>,
+        /// Number of days to show (overrides date)
+        #[arg(long)]
+        days: Option<u32>,
     },
     /// Get training status
     TrainingStatus {
         /// Date (YYYY-MM-DD), defaults to today
         #[arg(short, long)]
         date: Option<String>,
+        /// Number of days to show (overrides date)
+        #[arg(long)]
+        days: Option<u32>,
     },
     /// Get HRV (heart rate variability) data
     Hrv {
@@ -405,11 +411,19 @@ async fn main() -> garmin_cli::Result<()> {
             HealthCommands::Steps { days } => commands::steps(Some(days), cli.profile).await,
             HealthCommands::Calories { days } => commands::calories(Some(days), cli.profile).await,
             HealthCommands::Vo2max { date } => commands::vo2max(date, cli.profile).await,
-            HealthCommands::TrainingReadiness { date } => {
-                commands::training_readiness(date, cli.profile).await
+            HealthCommands::TrainingReadiness { date, days } => {
+                if let Some(d) = days {
+                    commands::training_readiness_range(d, cli.profile).await
+                } else {
+                    commands::training_readiness(date, cli.profile).await
+                }
             }
-            HealthCommands::TrainingStatus { date } => {
-                commands::training_status(date, cli.profile).await
+            HealthCommands::TrainingStatus { date, days } => {
+                if let Some(d) = days {
+                    commands::training_status_range(d, cli.profile).await
+                } else {
+                    commands::training_status(date, cli.profile).await
+                }
             }
             HealthCommands::Hrv { date } => commands::hrv(date, cli.profile).await,
             HealthCommands::FitnessAge { date } => commands::fitness_age(date, cli.profile).await,

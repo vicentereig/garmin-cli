@@ -76,12 +76,15 @@ garmin health weight-add --weight 80.2 --unit kg
 garmin health vo2max
 garmin health vo2max --date 2025-12-10
 
-# Training readiness
+# Training readiness (score, level, acute load, HRV)
 garmin health training-readiness
 garmin health training-readiness --date 2025-12-13
+garmin health training-readiness --days 14
 
-# Training status
+# Training status (load, ratio, focus)
 garmin health training-status
+garmin health training-status --date 2025-12-13
+garmin health training-status --days 14
 
 # HRV
 garmin health hrv
@@ -225,8 +228,17 @@ The sync creates several tables:
 - `activities` - Activity summaries (runs, rides, etc.)
 - `track_points` - GPS track points for activities
 - `daily_health` - Daily health metrics (sleep, stress, HRV, etc.)
+- `performance_metrics` - Training data (readiness, status, load, VO2 max, race predictions)
 - `profiles` - User profile data
 - `sync_tasks` - Internal sync task tracking
+
+Example query for training load trends:
+```sql
+SELECT date, training_status, acute_load, chronic_load, load_ratio, load_focus
+FROM performance_metrics
+WHERE date >= '2025-12-01'
+ORDER BY date DESC;
+```
 
 ## Output Formats
 
@@ -254,25 +266,69 @@ GARMIN_PROFILE=work garmin health summary
 
 ## Example Output
 
+### Performance Summary
+
 ```
+$ garmin health performance-summary
+
+Performance Summary for 2025-12-19
+==================================================
+VO2 Max:             53.1 ml/kg/min
+Fitness Age:         37 years (actual: 43)
+Training Status:     strained 1
+Training Load:       306 acute / 249 chronic (ratio: 1.20 OPTIMAL)
+Load Focus:          anaerobic shortage
+Training Readiness:  32 (LOW)
+
+Lactate Threshold
+------------------------------
+  Heart Rate:        162 bpm
+  Pace:              4:24/km
+  Last Updated:      2025-11-01
+
+Race Predictions
+------------------------------
+  5K                     21:13  (4:14/km)
+  10K                    45:21  (4:32/km)
+  Half Marathon        1:42:47  (4:52/km)
+  Marathon             3:46:27  (5:22/km)
+```
+
+### Training Status History
+
+```
+$ garmin health training-status --days 7
+
+Date           Status    Acute  Chronic        Ratio
+------------------------------------------------------
+2025-12-19 strained      306      249         1.20
+2025-12-18 strained      212      232         0.90
+2025-12-17 strained      146      223         0.60
+2025-12-16 strained      171      231         0.70
+2025-12-15 strained      221      235         0.90
+2025-12-14 unproductive  268      240         1.10
+2025-12-13 unproductive  314      244         1.20
+```
+
+### Health Insights
+
+```
+$ garmin health insights --days 28
+
 ╔══════════════════════════════════════════════════════════════════╗
 ║                     HEALTH INSIGHTS (28 days)                    ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-🧠 RESTORATIVE SLEEP RATIO
-   Your avg: 38%  |  Target: >45%  |  Last night: 22% ⚠️
+RESTORATIVE SLEEP RATIO
+   Your avg: 38%  |  Target: >45%  |  Last night: 22%
 
-😰 STRESS CORRELATION
-   Low restorative (<30%) → avg next-day stress: 38
-   High restorative (>45%) → avg next-day stress: 24
+STRESS CORRELATION
+   Low restorative (<30%) -> avg next-day stress: 38
+   High restorative (>45%) -> avg next-day stress: 24
 
-🎯 TODAY'S PREDICTION
+TODAY'S PREDICTION
    Based on last night (50m restorative, 22%):
    Expected stress: HIGH (35-45 avg expected)
-
-📊 SLEEP QUALITY RANKING (by restorative %)
-   Best:  2025-12-14 (52% restorative, score 93)
-   Worst: 2025-12-18 (22% restorative, score 50)
 ```
 
 ## License

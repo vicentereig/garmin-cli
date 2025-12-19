@@ -507,6 +507,161 @@ mod training_readiness_tests {
     }
 }
 
+mod training_status_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_training_status() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/training_status.json");
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/metrics-service/metrics/trainingstatus/aggregated/2025-12-14",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(
+                &token,
+                "/metrics-service/metrics/trainingstatus/aggregated/2025-12-14",
+            )
+            .await
+            .expect("Failed to get training status");
+
+        // Verify nested structure exists
+        assert!(result.get("mostRecentTrainingStatus").is_some());
+        assert!(result.get("mostRecentTrainingLoadBalance").is_some());
+        assert!(result.get("mostRecentVO2Max").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_training_status_nested_extraction() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/training_status.json")).unwrap();
+
+        // Extract training status from nested structure
+        let status_data = fixture
+            .get("mostRecentTrainingStatus")
+            .and_then(|s| s.get("latestTrainingStatusData"))
+            .and_then(|d| d.as_object())
+            .and_then(|m| m.values().next())
+            .expect("Failed to extract training status data");
+
+        assert_eq!(
+            status_data["trainingStatusFeedbackPhrase"],
+            "UNPRODUCTIVE_4"
+        );
+        assert_eq!(status_data["calendarDate"], "2025-12-14");
+    }
+
+    #[tokio::test]
+    async fn test_acute_training_load_dto() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/training_status.json")).unwrap();
+
+        let load_dto = fixture
+            .get("mostRecentTrainingStatus")
+            .and_then(|s| s.get("latestTrainingStatusData"))
+            .and_then(|d| d.as_object())
+            .and_then(|m| m.values().next())
+            .and_then(|entry| entry.get("acuteTrainingLoadDTO"))
+            .expect("Failed to extract acute training load DTO");
+
+        assert_eq!(load_dto["dailyTrainingLoadAcute"].as_i64().unwrap(), 268);
+        assert_eq!(load_dto["dailyTrainingLoadChronic"].as_i64().unwrap(), 240);
+        assert_eq!(
+            load_dto["dailyAcuteChronicWorkloadRatio"].as_f64().unwrap(),
+            1.1
+        );
+        assert_eq!(load_dto["acwrStatus"], "OPTIMAL");
+    }
+
+    #[tokio::test]
+    async fn test_training_load_balance() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/training_status.json")).unwrap();
+
+        let balance_data = fixture
+            .get("mostRecentTrainingLoadBalance")
+            .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.values().next())
+            .expect("Failed to extract load balance data");
+
+        assert_eq!(
+            balance_data["trainingBalanceFeedbackPhrase"],
+            "ANAEROBIC_SHORTAGE"
+        );
+        assert_eq!(
+            balance_data["monthlyLoadAerobicHigh"].as_f64().unwrap(),
+            576.51
+        );
+        assert_eq!(
+            balance_data["monthlyLoadAerobicLow"].as_f64().unwrap(),
+            323.86
+        );
+        assert_eq!(
+            balance_data["monthlyLoadAnaerobic"].as_f64().unwrap(),
+            28.39
+        );
+    }
+
+    #[tokio::test]
+    async fn test_training_load_targets() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/training_status.json")).unwrap();
+
+        let balance_data = fixture
+            .get("mostRecentTrainingLoadBalance")
+            .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
+            .and_then(|m| m.as_object())
+            .and_then(|m| m.values().next())
+            .expect("Failed to extract load balance data");
+
+        // Verify target ranges
+        assert_eq!(
+            balance_data["monthlyLoadAnaerobicTargetMin"]
+                .as_i64()
+                .unwrap(),
+            109
+        );
+        assert_eq!(
+            balance_data["monthlyLoadAnaerobicTargetMax"]
+                .as_i64()
+                .unwrap(),
+            327
+        );
+
+        // Anaerobic 28.39 is below target min 109 -> shortage
+        let anaerobic = balance_data["monthlyLoadAnaerobic"].as_f64().unwrap();
+        let target_min = balance_data["monthlyLoadAnaerobicTargetMin"]
+            .as_i64()
+            .unwrap() as f64;
+        assert!(anaerobic < target_min);
+    }
+
+    #[tokio::test]
+    async fn test_vo2max_from_training_status() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/training_status.json")).unwrap();
+
+        let vo2 = fixture
+            .get("mostRecentVO2Max")
+            .and_then(|v| v.get("generic"))
+            .and_then(|g| g.get("vo2MaxValue"))
+            .and_then(|v| v.as_f64())
+            .expect("Failed to extract VO2 max");
+
+        assert_eq!(vo2, 53.0);
+    }
+}
+
 mod hrv_tests {
     use super::*;
 
