@@ -16,6 +16,7 @@ use crate::error::{GarminError, Result};
 const API_USER_AGENT: &str = "GCM-iOS-5.7.2.1";
 
 /// Garmin Connect API client
+#[derive(Clone)]
 pub struct GarminClient {
     client: Client,
     base_url: String,

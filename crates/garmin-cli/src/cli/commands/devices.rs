@@ -1,10 +1,11 @@
 //! Device commands for garmin-cli
 
+use duckdb::Connection;
+
 use crate::client::GarminClient;
 use crate::config::CredentialStore;
-use crate::db::default_db_path;
 use crate::error::Result;
-use crate::Database;
+use crate::storage::default_storage_path;
 
 use super::auth::refresh_token;
 
@@ -96,33 +97,39 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 /// Show device history from synced activities
 pub async fn history(db_path: Option<String>) -> Result<()> {
-    let db_path = db_path.unwrap_or_else(|| default_db_path().unwrap());
+    let storage_path = db_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_storage_path);
 
-    if !std::path::Path::new(&db_path).exists() {
-        println!("No database found at: {}", db_path);
-        println!("Run 'garmin sync run' to sync your activities first.");
+    let activities_path = storage_path.join("activities");
+    if !activities_path.exists() {
+        println!("No activities found at: {}", activities_path.display());
+        println!("Run 'garmin sync' to sync your activities first.");
         return Ok(());
     }
 
-    let db = Database::open(&db_path)?;
-    let conn = db.connection();
-    let conn = conn.lock().unwrap();
+    // Use DuckDB to query Parquet files with glob pattern
+    let conn = Connection::open_in_memory()
+        .map_err(|e| crate::GarminError::Database(e.to_string()))?;
+
+    let glob_pattern = format!("{}/*.parquet", activities_path.display());
 
     // Query unique devices from activity metadata
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT
                 json_extract_string(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceId') as device_id,
                 json_extract(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceTypePk') as device_type,
                 MIN(start_time_local) as first_activity,
                 MAX(start_time_local) as last_activity,
                 COUNT(*) as activity_count
-            FROM activities
+            FROM '{}'
             WHERE raw_json IS NOT NULL
               AND json_extract_string(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceId') IS NOT NULL
             GROUP BY 1, 2
             ORDER BY first_activity",
-        )
+            glob_pattern
+        ))
         .map_err(|e| crate::GarminError::Database(e.to_string()))?;
 
     #[allow(clippy::type_complexity)]
@@ -148,7 +155,7 @@ pub async fn history(db_path: Option<String>) -> Result<()> {
 
     if devices.is_empty() {
         println!("No device history found in synced activities.");
-        println!("Make sure you have synced activities with 'garmin sync run'.");
+        println!("Make sure you have synced activities with 'garmin sync'.");
         return Ok(());
     }
 

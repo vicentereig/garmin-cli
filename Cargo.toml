@@ -3,9 +3,9 @@ resolver = "2"
 members = ["crates/garmin-cli"]
 
 [workspace.package]
-version = "1.0.6"
+version = "1.1.0"
 edition = "2021"
-authors = ["Vicente Reig <vicente@reig.dev>"]
+authors = ["Vicente Reig Rincon de Arellano <hey@vicente.services>"]
 license = "MIT"
 repository = "https://github.com/vicentereig/garmin-cli"
 
@@ -53,6 +53,11 @@ rpassword = "7"
 
 # Database
 duckdb = { version = "1.1", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Parquet/Arrow
+arrow = { version = "54", default-features = false, features = ["prettyprint"] }
+parquet = { version = "54", default-features = false, features = ["arrow", "snap", "zstd"] }
 
 # Spatial/GIS
 gpx = "0.10"
@@ -62,3 +67,6 @@ wkt = "0.11"
 # Testing
 wiremock = "0.6"
 tempfile = "3"
+
+# Concurrency
+dashmap = "6"

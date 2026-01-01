@@ -158,10 +158,11 @@ garmin profile settings
 
 ## Sync Commands
 
-Sync your Garmin data to a local DuckDB database for offline analysis and querying.
+Sync your Garmin data to local Parquet files for offline analysis. The sync uses a parallel producer/consumer pipeline with 3 concurrent workers for fast data fetching.
 
 ```bash
-# Sync all data (activities, health, performance) for the last 7 days
+# Sync all data (activities, health, performance)
+# Automatically detects your oldest activity and syncs from there
 garmin sync run
 
 # Sync specific date range
@@ -192,50 +193,79 @@ garmin sync reset
 garmin sync clear
 ```
 
-### Database Location
+### Storage Architecture
 
-By default, synced data is stored in a DuckDB database at:
-- **macOS:** `~/Library/Application Support/garmin/garmin.duckdb`
-- **Linux:** `~/.local/share/garmin/garmin.duckdb`
+Data is stored in time-partitioned Parquet files for efficient querying:
 
-Use a custom database path:
-```bash
-garmin sync run --db /path/to/custom.duckdb
-garmin sync status --db /path/to/custom.duckdb
 ```
+~/.local/share/garmin/           # Linux
+~/Library/Application Support/garmin/  # macOS
+├── sync.db                      # SQLite: sync state + task queue
+├── profiles.parquet             # User profiles
+├── activities/
+│   ├── 2024-W48.parquet        # Weekly partitions
+│   └── ...
+├── track_points/
+│   ├── 2024-12-01.parquet      # Daily partitions (GPS data)
+│   └── ...
+├── daily_health/
+│   ├── 2024-12.parquet         # Monthly partitions
+│   └── ...
+└── performance_metrics/
+    ├── 2024-12.parquet         # Monthly partitions
+    └── ...
+```
+
+### Parallel Sync Pipeline
+
+The sync uses a producer/consumer architecture for ~3x faster syncing:
+
+- **3 Producers**: Fetch data from Garmin API (rate-limited)
+- **Bounded channel**: Backpressure with 100-item buffer
+- **3 Consumers**: Write to Parquet with partition-level locks
+- **Crash recovery**: SQLite task queue persists progress
+
+Different partitions can be written in parallel; writes to the same partition are serialized to prevent data loss.
 
 ### Querying with DuckDB
 
-You can query your synced data directly using the DuckDB CLI:
+Query your synced Parquet files directly using DuckDB:
 
 ```bash
 # Install DuckDB CLI
 brew install duckdb  # macOS
 # or download from https://duckdb.org
 
-# Open the database
-duckdb ~/Library/Application\ Support/garmin/garmin.duckdb
+# Set your data path (shown in TUI during sync)
+# macOS: ~/Library/Application Support/garmin
+# Linux: ~/.local/share/garmin
+export GARMIN_DATA=~/Library/Application\ Support/garmin
 
-# Example queries
-SELECT * FROM activities ORDER BY start_time DESC LIMIT 10;
-SELECT * FROM daily_health WHERE date >= '2025-01-01';
-SELECT device_name, COUNT(*) as activity_count FROM activities GROUP BY device_name;
+# Query activities from all partitions
+duckdb -c "SELECT * FROM '$GARMIN_DATA/activities/*.parquet' ORDER BY start_time_local DESC LIMIT 10"
+
+# Query health data for a specific month
+duckdb -c "SELECT * FROM '$GARMIN_DATA/daily_health/2025-01.parquet' ORDER BY date"
+
+# Aggregate across all health data
+duckdb -c "SELECT date, steps, resting_hr, sleep_seconds/3600.0 as sleep_hours FROM '$GARMIN_DATA/daily_health/*.parquet' WHERE date >= '2025-01-01' ORDER BY date"
 ```
 
-### Database Schema
+### Parquet Schema
 
-The sync creates several tables:
-- `activities` - Activity summaries (runs, rides, etc.)
-- `track_points` - GPS track points for activities
-- `daily_health` - Daily health metrics (sleep, stress, HRV, etc.)
-- `performance_metrics` - Training data (readiness, status, load, VO2 max, race predictions)
-- `profiles` - User profile data
-- `sync_tasks` - Internal sync task tracking
+The sync creates several Parquet datasets:
+
+- `activities/*.parquet` - Activity summaries (runs, rides, etc.) - weekly partitions
+- `track_points/*.parquet` - GPS track points - daily partitions
+- `daily_health/*.parquet` - Daily health metrics (sleep, stress, HRV, etc.) - monthly partitions
+- `performance_metrics/*.parquet` - Training data (readiness, VO2 max, race predictions) - monthly partitions
+- `profiles.parquet` - User profile data
 
 Example query for training load trends:
 ```sql
-SELECT date, training_status, acute_load, chronic_load, load_ratio, load_focus
-FROM performance_metrics
+-- macOS path shown; use ~/.local/share/garmin on Linux
+SELECT date, training_status, training_readiness, vo2max
+FROM '~/Library/Application Support/garmin/performance_metrics/*.parquet'
 WHERE date >= '2025-12-01'
 ORDER BY date DESC;
 ```

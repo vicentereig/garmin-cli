@@ -55,11 +55,19 @@ rpassword.workspace = true
 
 # Database
 duckdb.workspace = true
+rusqlite.workspace = true
+
+# Parquet/Arrow
+arrow.workspace = true
+parquet.workspace = true
 
 # Spatial/GIS
 gpx.workspace = true
 geo.workspace = true
 wkt.workspace = true
+
+# Concurrency
+dashmap.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
