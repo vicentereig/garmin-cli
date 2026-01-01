@@ -2,9 +2,11 @@
 //!
 //! Provides:
 //! - Rate-limited API access with parallel streams
-//! - Persistent task queue for crash recovery
+//! - Persistent task queue for crash recovery (SQLite)
 //! - Incremental sync with gap detection
 //! - GPX parsing for track points
+//! - Parquet storage for concurrent read access
+//! - Producer/consumer pipeline for concurrent fetching and writing
 //! - Fancy TUI or simple progress output
 
 pub mod progress;
@@ -12,22 +14,57 @@ pub mod rate_limiter;
 pub mod task_queue;
 pub mod ui;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 
 use crate::client::{GarminClient, OAuth2Token};
-use crate::db::models::{SyncTask, SyncTaskType};
-use crate::{Database, GarminError, Result};
+use crate::db::models::{
+    Activity, DailyHealth, PerformanceMetrics, SyncTask, SyncTaskType, TrackPoint,
+};
+use crate::storage::{ParquetStore, Storage, SyncDb};
+use crate::{GarminError, Result};
 use std::io::{self, Write};
 
-pub use progress::{SharedProgress, SyncProgress};
+pub use progress::{PlanningStep, SharedProgress, SyncProgress};
 pub use rate_limiter::{RateLimiter, SharedRateLimiter};
-pub use task_queue::TaskQueue;
+pub use task_queue::{SharedTaskQueue, TaskQueue};
+
+/// Data produced by API fetchers, consumed by Parquet writers
+#[derive(Debug)]
+enum SyncData {
+    /// Activity list with parsed activities and potential follow-up tasks
+    Activities {
+        records: Vec<Activity>,
+        gpx_tasks: Vec<SyncTask>,
+        next_page: Option<SyncTask>,
+        task_id: i64,
+    },
+    /// Daily health record
+    Health {
+        record: DailyHealth,
+        task_id: i64,
+    },
+    /// Performance metrics record
+    Performance {
+        record: PerformanceMetrics,
+        task_id: i64,
+    },
+    /// Track points from GPX
+    TrackPoints {
+        #[allow(dead_code)]
+        activity_id: i64,
+        date: NaiveDate,
+        points: Vec<TrackPoint>,
+        task_id: i64,
+    },
+}
 
 /// Sync engine for orchestrating data synchronization
 pub struct SyncEngine {
-    db: Database,
+    storage: Storage,
     client: GarminClient,
     token: OAuth2Token,
     rate_limiter: RateLimiter,
@@ -37,18 +74,30 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
-    /// Create a new sync engine
-    pub fn new(db: Database, client: GarminClient, token: OAuth2Token, profile_id: i32) -> Self {
-        let queue = TaskQueue::new(db.clone());
-        Self {
-            db,
+    /// Create a new sync engine with default storage location
+    pub fn new(client: GarminClient, token: OAuth2Token) -> Result<Self> {
+        let storage = Storage::open_default()?;
+        Self::with_storage(storage, client, token)
+    }
+
+    /// Create a new sync engine with custom storage
+    pub fn with_storage(storage: Storage, client: GarminClient, token: OAuth2Token) -> Result<Self> {
+        // Get or create profile (will be updated with display name after API call)
+        let profile_id = storage.sync_db.get_or_create_profile("default")?;
+
+        // Create task queue using the sync database
+        let sync_db = SyncDb::open(storage.base_path().join("sync.db"))?;
+        let queue = TaskQueue::new(sync_db, profile_id);
+
+        Ok(Self {
+            storage,
             client,
             token,
             rate_limiter: RateLimiter::new(),
             queue,
             profile_id,
             display_name: None,
-        }
+        })
     }
 
     /// Fetch and cache the user's display name
@@ -68,14 +117,22 @@ impl SyncEngine {
             .map(|s| s.to_string())
             .ok_or_else(|| GarminError::invalid_response("Could not get display name"))?;
 
+        // Update profile in database
+        self.profile_id = self.storage.sync_db.get_or_create_profile(&name)?;
+        self.queue.set_profile_id(self.profile_id);
+
         self.display_name = Some(name.clone());
         Ok(name)
     }
 
     /// Find the oldest activity date by querying the activities API
-    async fn find_oldest_activity_date(&mut self) -> Result<NaiveDate> {
-        print!("Finding oldest activity date...");
-        let _ = io::stdout().flush();
+    async fn find_oldest_activity_date(&mut self, progress: Option<&SyncProgress>) -> Result<NaiveDate> {
+        if let Some(p) = progress {
+            p.set_planning_step(PlanningStep::FindingOldestActivity);
+        } else {
+            print!("Finding oldest activity date...");
+            let _ = io::stdout().flush();
+        }
 
         // The API returns activities sorted by date descending (newest first)
         // Use exponential search to find the end quickly, then fetch the last page
@@ -149,7 +206,11 @@ impl SyncEngine {
             Utc::now().date_naive() - Duration::days(365)
         });
 
-        println!(" {}", result);
+        if let Some(p) = progress {
+            p.set_oldest_activity_date(&result.to_string());
+        } else {
+            println!(" {}", result);
+        }
         Ok(result)
     }
 
@@ -168,7 +229,22 @@ impl SyncEngine {
     async fn run_with_progress(&mut self, opts: &SyncOptions) -> Result<SyncStats> {
         let progress = Arc::new(SyncProgress::new());
 
-        // Fetch display name early
+        // Set storage path for display
+        progress.set_storage_path(&self.storage.base_path().display().to_string());
+
+        // Spawn TUI immediately (before planning)
+        let ui_progress = progress.clone();
+        let ui_handle = tokio::spawn(async move {
+            if let Err(e) = ui::run_tui(ui_progress).await {
+                eprintln!("TUI error: {}", e);
+            }
+        });
+
+        // Give TUI time to initialize
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Planning phase - updates progress instead of printing
+        progress.set_planning_step(PlanningStep::FetchingProfile);
         let display_name = self.get_display_name().await?;
         progress.set_profile(&display_name);
 
@@ -177,98 +253,155 @@ impl SyncEngine {
 
         // Plan phase
         if self.queue.pending_count()? == 0 {
-            self.plan_sync(opts).await?;
+            self.plan_sync_with_progress(opts, &progress).await?;
         }
+
+        // Mark planning complete
+        progress.finish_planning();
 
         // Count tasks by type for progress tracking
         self.count_tasks_for_progress(&progress)?;
 
-        // Determine date range for display
+        // Determine date range for display (prefer actual planning result)
         let from_date = opts
             .from_date
             .unwrap_or_else(|| Utc::now().date_naive() - Duration::days(365));
         let to_date = opts.to_date.unwrap_or_else(|| Utc::now().date_naive());
-        progress.set_date_range(&from_date.to_string(), &to_date.to_string());
 
-        // Spawn TUI in background
-        let ui_progress = progress.clone();
-        let ui_handle = tokio::spawn(async move {
-            if let Err(e) = ui::run_tui(ui_progress).await {
-                eprintln!("TUI error: {}", e);
-            }
-        });
+        let from_display = progress
+            .get_oldest_activity_date()
+            .unwrap_or_else(|| from_date.to_string());
+        progress.set_date_range(&from_display, &to_date.to_string());
 
-        // Run sync with progress updates
-        let stats = self
-            .run_with_progress_tracking(opts, progress.clone())
-            .await?;
+        let stats_result = if opts.dry_run {
+            Ok(SyncStats::default())
+        } else {
+            self.run_with_progress_tracking(opts, progress.clone()).await
+        };
 
-        // Wait for TUI to finish
-        ui_handle.abort();
+        // Signal TUI to exit and wait for cleanup
+        progress.request_shutdown();
+        let _ = ui_handle.await;
 
-        // Print final stats
-        println!("\nSync complete: {}", stats);
-
+        let stats = stats_result?;
+        if !opts.dry_run {
+            println!("\nSync complete: {}", stats);
+        }
         Ok(stats)
     }
 
-    /// Run sync with progress tracking (no TUI)
+    /// Run sync with progress tracking using parallel producer/consumer pipeline
     async fn run_with_progress_tracking(
         &mut self,
         opts: &SyncOptions,
         progress: SharedProgress,
     ) -> Result<SyncStats> {
-        let mut stats = SyncStats::default();
+        // Use parallel execution with producer/consumer pipeline
+        self.run_parallel(opts, progress).await
+    }
 
-        // Execute phase: process tasks
-        while let Some(task) = self.queue.pop()? {
-            if self.rate_limiter.should_pause() {
-                tokio::time::sleep(self.rate_limiter.pause_duration()).await;
+    /// Run parallel sync with producer/consumer pipeline
+    ///
+    /// Producers: Fetch data from Garmin API (rate-limited)
+    /// Consumers: Write data to Parquet (partition-locked)
+    async fn run_parallel(
+        &mut self,
+        opts: &SyncOptions,
+        progress: SharedProgress,
+    ) -> Result<SyncStats> {
+        // Bounded channel for backpressure (100 items)
+        let (tx, rx) = mpsc::channel::<SyncData>(100);
+
+        // Shared resources
+        let rate_limiter = SharedRateLimiter::new(opts.concurrency);
+        let queue = SharedTaskQueue::new(TaskQueue::new(
+            SyncDb::open(self.storage.base_path().join("sync.db"))?,
+            self.profile_id,
+        ));
+        let parquet = Arc::new(self.storage.parquet.clone());
+        let client = self.client.clone();
+        let token = self.token.clone();
+        let stats = Arc::new(TokioMutex::new(SyncStats::default()));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let display_name = Arc::new(self.get_display_name().await?);
+        let profile_id = self.profile_id;
+
+        // Spawn producers (API fetchers)
+        let mut producer_handles = Vec::new();
+        for id in 0..opts.concurrency {
+            let tx = tx.clone();
+            let queue = queue.clone();
+            let rate_limiter = rate_limiter.clone();
+            let client = client.clone();
+            let token = token.clone();
+            let progress = progress.clone();
+            let display_name = Arc::clone(&display_name);
+            let stats = Arc::clone(&stats);
+            let in_flight = Arc::clone(&in_flight);
+
+            producer_handles.push(tokio::spawn(async move {
+                producer_loop(
+                    id,
+                    queue,
+                    rate_limiter,
+                    client,
+                    token,
+                    tx,
+                    progress,
+                    display_name,
+                    profile_id,
+                    stats,
+                    in_flight,
+                )
+                .await
+            }));
+        }
+        drop(tx); // Close sender so consumers know when done
+
+        // Spawn consumers (Parquet writers)
+        let rx = Arc::new(TokioMutex::new(rx));
+        let mut consumer_handles = Vec::new();
+        for id in 0..opts.concurrency {
+            let rx = Arc::clone(&rx);
+            let parquet = Arc::clone(&parquet);
+            let queue = queue.clone();
+            let stats = Arc::clone(&stats);
+            let progress = progress.clone();
+            let in_flight = Arc::clone(&in_flight);
+
+            consumer_handles.push(tokio::spawn(async move {
+                consumer_loop(id, rx, parquet, queue, stats, progress, in_flight).await
+            }));
+        }
+
+        // Wait for all producers to finish
+        for h in producer_handles {
+            if let Err(e) = h.await {
+                eprintln!("Producer error: {}", e);
             }
+        }
 
-            let task_id = task.id.unwrap();
-            self.queue.mark_in_progress(task_id)?;
-
-            // Update progress for current task
-            update_progress_for_task(&task, &progress);
-
-            self.rate_limiter.wait().await;
-            progress.record_request();
-
-            match self.execute_task(&task).await {
-                Ok(()) => {
-                    self.queue.mark_completed(task_id)?;
-                    self.rate_limiter.on_success();
-                    stats.completed += 1;
-                    complete_progress_for_task(&task, &progress);
-                }
-                Err(GarminError::RateLimited) => {
-                    self.rate_limiter.on_rate_limit();
-                    let backoff = self.rate_limiter.current_backoff();
-                    self.queue.mark_failed(
-                        task_id,
-                        "Rate limited",
-                        Duration::from_std(backoff).unwrap_or(Duration::seconds(60)),
-                    )?;
-                    stats.rate_limited += 1;
-                }
-                Err(e) => {
-                    let backoff = Duration::seconds(60);
-                    self.queue.mark_failed(task_id, &e.to_string(), backoff)?;
-                    stats.failed += 1;
-                    fail_progress_for_task(&task, &progress);
-                }
-            }
-
-            if opts.dry_run {
-                break;
+        // Wait for all consumers to finish
+        for h in consumer_handles {
+            if let Err(e) = h.await {
+                eprintln!("Consumer error: {}", e);
             }
         }
 
         // Cleanup old completed tasks
         self.queue.cleanup(7)?;
 
-        Ok(stats)
+        // Update profile sync time
+        self.storage.sync_db.update_profile_sync_time(self.profile_id)?;
+
+        // Extract final stats
+        let final_stats = stats.lock().await;
+        Ok(SyncStats {
+            recovered: final_stats.recovered,
+            completed: final_stats.completed,
+            rate_limited: final_stats.rate_limited,
+            failed: final_stats.failed,
+        })
     }
 
     /// Run sync sequentially (original behavior, simple output)
@@ -296,6 +429,11 @@ impl SyncEngine {
 
         let total_tasks = self.queue.pending_count()?;
         println!("  {} tasks queued\n", total_tasks);
+
+        if opts.dry_run {
+            println!("Dry run mode - tasks planned but not executed");
+            return Ok(stats);
+        }
 
         // Execute phase: process tasks
         while let Some(task) = self.queue.pop()? {
@@ -349,53 +487,26 @@ impl SyncEngine {
         // Cleanup old completed tasks
         self.queue.cleanup(7)?;
 
+        // Update profile sync time
+        self.storage.sync_db.update_profile_sync_time(self.profile_id)?;
+
         Ok(stats)
     }
 
     /// Count pending tasks by type and update progress
+    ///
+    /// Sets initial totals based on actual tasks in queue.
+    /// GPX totals are updated dynamically as activities are discovered.
     fn count_tasks_for_progress(&self, progress: &SyncProgress) -> Result<()> {
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
+        // Count actual tasks by type from the queue
+        let (activities, gpx, health, performance) = self.queue.count_by_type()?;
 
-        // Count activities tasks
-        let act_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sync_tasks WHERE status IN ('pending', 'failed') AND task_type = 'activities'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        progress.activities.set_total(act_count as u32);
-
-        // Count GPX tasks
-        let gpx_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sync_tasks WHERE status IN ('pending', 'failed') AND task_type = 'download_gpx'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        progress.gpx.set_total(gpx_count as u32);
-
-        // Count health tasks
-        let health_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sync_tasks WHERE status IN ('pending', 'failed') AND task_type = 'daily_health'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        progress.health.set_total(health_count as u32);
-
-        // Count performance tasks
-        let perf_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sync_tasks WHERE status IN ('pending', 'failed') AND task_type = 'performance'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-        progress.performance.set_total(perf_count as u32);
+        // Set totals based on what's actually in the queue
+        // Activities may grow via pagination, GPX via activity discovery
+        progress.activities.set_total(activities.max(1)); // At least 1 for pagination
+        progress.gpx.set_total(gpx);
+        progress.health.set_total(health);
+        progress.performance.set_total(performance);
 
         Ok(())
     }
@@ -405,7 +516,7 @@ impl SyncEngine {
         // Determine date range - auto-detect from oldest activity if not specified
         let from_date = match opts.from_date {
             Some(date) => date,
-            None => self.find_oldest_activity_date().await?,
+            None => self.find_oldest_activity_date(None).await?,
         };
         let to_date = opts.to_date.unwrap_or_else(|| Utc::now().date_naive());
 
@@ -436,6 +547,41 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Plan sync tasks with progress tracking (for TUI mode)
+    async fn plan_sync_with_progress(&mut self, opts: &SyncOptions, progress: &SyncProgress) -> Result<()> {
+        // Determine date range - auto-detect from oldest activity if not specified
+        let from_date = match opts.from_date {
+            Some(date) => {
+                progress.set_oldest_activity_date(&date.to_string());
+                date
+            }
+            None => self.find_oldest_activity_date(Some(progress)).await?,
+        };
+        let to_date = opts.to_date.unwrap_or_else(|| Utc::now().date_naive());
+
+        // Plan activity sync
+        if opts.sync_activities {
+            progress.set_planning_step(PlanningStep::PlanningActivities);
+            self.plan_activities_sync()?;
+        }
+
+        // Plan health sync
+        if opts.sync_health {
+            let total_days = (to_date - from_date).num_days() as u32 + 1;
+            progress.set_planning_step(PlanningStep::PlanningHealth { days: total_days });
+            self.plan_health_sync(from_date, to_date)?;
+        }
+
+        // Plan performance sync
+        if opts.sync_performance {
+            let total_weeks = ((to_date - from_date).num_days() / 7) as u32 + 1;
+            progress.set_planning_step(PlanningStep::PlanningPerformance { weeks: total_weeks });
+            self.plan_performance_sync(from_date, to_date)?;
+        }
+
+        Ok(())
+    }
+
     /// Plan activity sync tasks
     fn plan_activities_sync(&self) -> Result<()> {
         // Start with first page, we'll add more as we discover them
@@ -455,12 +601,11 @@ impl SyncEngine {
         let mut count = 0;
         let mut date = from;
         while date <= to {
-            // Check if we already have data for this date
-            if !self.has_health_data(date)? {
-                let task = SyncTask::new(self.profile_id, SyncTaskType::DailyHealth { date });
-                self.queue.push(task)?;
-                count += 1;
-            }
+            // For now, always queue (we'll handle duplicates in upsert)
+            // In future, could check Parquet files for existing data
+            let task = SyncTask::new(self.profile_id, SyncTaskType::DailyHealth { date });
+            self.queue.push(task)?;
+            count += 1;
             date += Duration::days(1);
         }
         Ok(count)
@@ -472,46 +617,12 @@ impl SyncEngine {
         let mut count = 0;
         let mut date = from;
         while date <= to {
-            if !self.has_performance_data(date)? {
-                let task = SyncTask::new(self.profile_id, SyncTaskType::Performance { date });
-                self.queue.push(task)?;
-                count += 1;
-            }
+            let task = SyncTask::new(self.profile_id, SyncTaskType::Performance { date });
+            self.queue.push(task)?;
+            count += 1;
             date += Duration::days(7);
         }
         Ok(count)
-    }
-
-    /// Check if health data exists for date
-    fn has_health_data(&self, date: NaiveDate) -> Result<bool> {
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM daily_health WHERE profile_id = ? AND date = ?",
-                duckdb::params![self.profile_id, date.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(|e| GarminError::Database(e.to_string()))?;
-
-        Ok(count > 0)
-    }
-
-    /// Check if performance data exists for date
-    fn has_performance_data(&self, date: NaiveDate) -> Result<bool> {
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM performance_metrics WHERE profile_id = ? AND date = ?",
-                duckdb::params![self.profile_id, date.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(|e| GarminError::Database(e.to_string()))?;
-
-        Ok(count > 0)
     }
 
     /// Execute a single sync task
@@ -521,7 +632,9 @@ impl SyncEngine {
             SyncTaskType::ActivityDetail { activity_id } => {
                 self.sync_activity_detail(*activity_id).await
             }
-            SyncTaskType::DownloadGpx { activity_id, .. } => self.download_gpx(*activity_id).await,
+            SyncTaskType::DownloadGpx { activity_id, activity_date, .. } => {
+                self.download_gpx(*activity_id, activity_date.as_deref()).await
+            }
             SyncTaskType::DailyHealth { date } => self.sync_daily_health(*date).await,
             SyncTaskType::Performance { date } => self.sync_performance(*date).await,
             SyncTaskType::Weight { from, to } => self.sync_weight(*from, *to).await,
@@ -539,9 +652,12 @@ impl SyncEngine {
         );
         let activities: Vec<serde_json::Value> = self.client.get_json(&self.token, &path).await?;
 
+        let mut parsed_activities = Vec::new();
+
         for activity in &activities {
-            // Store activity summary
-            self.store_activity(activity)?;
+            // Parse activity
+            let parsed = self.parse_activity(activity)?;
+            parsed_activities.push(parsed);
 
             // Queue GPX download for activities with GPS
             if activity
@@ -573,6 +689,11 @@ impl SyncEngine {
             }
         }
 
+        // Store activities in Parquet
+        if !parsed_activities.is_empty() {
+            self.storage.parquet.upsert_activities(&parsed_activities)?;
+        }
+
         // If we got a full page, there might be more
         if activities.len() == limit as usize {
             let task = SyncTask::new(
@@ -588,60 +709,56 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Store an activity in the database
-    fn store_activity(&self, activity: &serde_json::Value) -> Result<()> {
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
-
+    /// Parse activity JSON into Activity struct
+    fn parse_activity(&self, activity: &serde_json::Value) -> Result<Activity> {
         let activity_id = activity
             .get("activityId")
             .and_then(|v| v.as_i64())
             .ok_or_else(|| GarminError::invalid_response("Missing activityId"))?;
 
-        conn.execute(
-            "INSERT INTO activities (
-                activity_id, profile_id, activity_name, activity_type,
-                start_time_local, duration_sec, distance_m, calories,
-                avg_hr, max_hr, avg_speed, max_speed,
-                elevation_gain, elevation_loss, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (activity_id) DO UPDATE SET
-                activity_name = EXCLUDED.activity_name,
-                activity_type = EXCLUDED.activity_type,
-                raw_json = EXCLUDED.raw_json",
-            duckdb::params![
-                activity_id,
-                self.profile_id,
-                activity.get("activityName").and_then(|v| v.as_str()),
-                activity
-                    .get("activityType")
-                    .and_then(|v| v.get("typeKey"))
-                    .and_then(|v| v.as_str()),
-                activity.get("startTimeLocal").and_then(|v| v.as_str()),
-                activity.get("duration").and_then(|v| v.as_f64()),
-                activity.get("distance").and_then(|v| v.as_f64()),
-                activity
-                    .get("calories")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                activity
-                    .get("averageHR")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                activity
-                    .get("maxHR")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                activity.get("averageSpeed").and_then(|v| v.as_f64()),
-                activity.get("maxSpeed").and_then(|v| v.as_f64()),
-                activity.get("elevationGain").and_then(|v| v.as_f64()),
-                activity.get("elevationLoss").and_then(|v| v.as_f64()),
-                activity.to_string(),
-            ],
-        )
-        .map_err(|e| GarminError::Database(e.to_string()))?;
+        let start_time_local = activity
+            .get("startTimeLocal")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+            .map(|dt| dt.with_timezone(&Utc));
 
-        Ok(())
+        let start_time_gmt = activity
+            .get("startTimeGMT")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        Ok(Activity {
+            activity_id,
+            profile_id: self.profile_id,
+            activity_name: activity.get("activityName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            activity_type: activity.get("activityType").and_then(|v| v.get("typeKey")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+            start_time_local,
+            start_time_gmt,
+            duration_sec: activity.get("duration").and_then(|v| v.as_f64()),
+            distance_m: activity.get("distance").and_then(|v| v.as_f64()),
+            calories: activity.get("calories").and_then(|v| v.as_i64()).map(|v| v as i32),
+            avg_hr: activity.get("averageHR").and_then(|v| v.as_i64()).map(|v| v as i32),
+            max_hr: activity.get("maxHR").and_then(|v| v.as_i64()).map(|v| v as i32),
+            avg_speed: activity.get("averageSpeed").and_then(|v| v.as_f64()),
+            max_speed: activity.get("maxSpeed").and_then(|v| v.as_f64()),
+            elevation_gain: activity.get("elevationGain").and_then(|v| v.as_f64()),
+            elevation_loss: activity.get("elevationLoss").and_then(|v| v.as_f64()),
+            avg_cadence: activity.get("averageRunningCadenceInStepsPerMinute").and_then(|v| v.as_f64()),
+            avg_power: activity.get("avgPower").and_then(|v| v.as_i64()).map(|v| v as i32),
+            normalized_power: activity.get("normPower").and_then(|v| v.as_i64()).map(|v| v as i32),
+            training_effect: activity.get("aerobicTrainingEffect").and_then(|v| v.as_f64()),
+            training_load: activity.get("activityTrainingLoad").and_then(|v| v.as_f64()),
+            start_lat: activity.get("startLatitude").and_then(|v| v.as_f64()),
+            start_lon: activity.get("startLongitude").and_then(|v| v.as_f64()),
+            end_lat: activity.get("endLatitude").and_then(|v| v.as_f64()),
+            end_lon: activity.get("endLongitude").and_then(|v| v.as_f64()),
+            ground_contact_time: activity.get("avgGroundContactTime").and_then(|v| v.as_f64()),
+            vertical_oscillation: activity.get("avgVerticalOscillation").and_then(|v| v.as_f64()),
+            stride_length: activity.get("avgStrideLength").and_then(|v| v.as_f64()),
+            location_name: activity.get("locationName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            raw_json: Some(activity.clone()),
+        })
     }
 
     /// Sync activity detail (not implemented yet)
@@ -651,47 +768,61 @@ impl SyncEngine {
     }
 
     /// Download and parse GPX
-    async fn download_gpx(&mut self, activity_id: i64) -> Result<()> {
+    async fn download_gpx(&mut self, activity_id: i64, activity_date: Option<&str>) -> Result<()> {
         let path = format!("/download-service/export/gpx/activity/{}", activity_id);
         let gpx_bytes = self.client.download(&self.token, &path).await?;
         let gpx_data = String::from_utf8_lossy(&gpx_bytes);
-        self.parse_and_store_gpx(activity_id, &gpx_data)?;
+
+        // Parse activity date for partitioning
+        let date = activity_date
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .unwrap_or_else(|| Utc::now().date_naive());
+
+        self.parse_and_store_gpx(activity_id, date, &gpx_data)?;
         Ok(())
     }
 
     /// Parse GPX and store track points
-    fn parse_and_store_gpx(&self, activity_id: i64, gpx_data: &str) -> Result<()> {
+    fn parse_and_store_gpx(&self, activity_id: i64, activity_date: NaiveDate, gpx_data: &str) -> Result<()> {
         use gpx::read;
         use std::io::BufReader;
 
         let reader = BufReader::new(gpx_data.as_bytes());
         let gpx = read(reader).map_err(|e| GarminError::invalid_response(e.to_string()))?;
 
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
+        let mut points = Vec::new();
 
         for track in gpx.tracks {
             for segment in track.segments {
                 for point in segment.points {
                     let timestamp = point
                         .time
-                        .map(|t| t.format().unwrap_or_default())
+                        .map(|t| {
+                            DateTime::parse_from_rfc3339(&t.format().unwrap_or_default())
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or_default()
+                        })
                         .unwrap_or_default();
 
-                    conn.execute(
-                        "INSERT INTO track_points (activity_id, timestamp, lat, lon, elevation)
-                         VALUES (?, ?, ?, ?, ?)",
-                        duckdb::params![
-                            activity_id,
-                            timestamp,
-                            point.point().y(),
-                            point.point().x(),
-                            point.elevation,
-                        ],
-                    )
-                    .map_err(|e| GarminError::Database(e.to_string()))?;
+                    points.push(TrackPoint {
+                        id: None,
+                        activity_id,
+                        timestamp,
+                        lat: Some(point.point().y()),
+                        lon: Some(point.point().x()),
+                        elevation: point.elevation,
+                        heart_rate: None,  // GPX doesn't include HR
+                        cadence: None,
+                        power: None,
+                        speed: None,
+                    });
                 }
             }
+        }
+
+        // Write track points to Parquet
+        if !points.is_empty() {
+            self.storage.parquet.write_track_points(activity_date, &points)?;
         }
 
         Ok(())
@@ -715,80 +846,43 @@ impl SyncEngine {
             Ok(data) => data,
             Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => {
                 // No data for this date - store empty record to mark as synced
-                // This prevents re-fetching dates that never had data (before device ownership, gaps, etc.)
                 serde_json::json!({})
             }
             Err(e) => return Err(e),
         };
 
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
+        let record = DailyHealth {
+            id: None,
+            profile_id: self.profile_id,
+            date,
+            steps: health.get("totalSteps").and_then(|v| v.as_i64()).map(|v| v as i32),
+            step_goal: health.get("dailyStepGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
+            total_calories: health.get("totalKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+            active_calories: health.get("activeKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+            bmr_calories: health.get("bmrKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+            resting_hr: health.get("restingHeartRate").and_then(|v| v.as_i64()).map(|v| v as i32),
+            sleep_seconds: health.get("sleepingSeconds").and_then(|v| v.as_i64()).map(|v| v as i32),
+            deep_sleep_seconds: None,  // Need separate sleep endpoint
+            light_sleep_seconds: None,
+            rem_sleep_seconds: None,
+            sleep_score: None,
+            avg_stress: health.get("averageStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
+            max_stress: health.get("maxStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
+            body_battery_start: health.get("bodyBatteryChargedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
+            body_battery_end: health.get("bodyBatteryDrainedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
+            hrv_weekly_avg: None,  // Need HRV endpoint
+            hrv_last_night: None,
+            hrv_status: None,
+            avg_respiration: health.get("averageRespirationValue").and_then(|v| v.as_f64()),
+            avg_spo2: health.get("averageSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
+            lowest_spo2: health.get("lowestSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
+            hydration_ml: health.get("hydrationIntakeGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
+            moderate_intensity_min: health.get("moderateIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
+            vigorous_intensity_min: health.get("vigorousIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
+            raw_json: Some(health),
+        };
 
-        conn.execute(
-            "INSERT INTO daily_health (
-                profile_id, date, steps, step_goal, total_calories, active_calories,
-                resting_hr, sleep_seconds, avg_stress, max_stress,
-                body_battery_start, body_battery_end, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (profile_id, date) DO UPDATE SET
-                steps = EXCLUDED.steps,
-                step_goal = EXCLUDED.step_goal,
-                total_calories = EXCLUDED.total_calories,
-                active_calories = EXCLUDED.active_calories,
-                resting_hr = EXCLUDED.resting_hr,
-                sleep_seconds = EXCLUDED.sleep_seconds,
-                avg_stress = EXCLUDED.avg_stress,
-                max_stress = EXCLUDED.max_stress,
-                body_battery_start = EXCLUDED.body_battery_start,
-                body_battery_end = EXCLUDED.body_battery_end,
-                raw_json = EXCLUDED.raw_json",
-            duckdb::params![
-                self.profile_id,
-                date.to_string(),
-                health
-                    .get("totalSteps")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("dailyStepGoal")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("totalKilocalories")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("activeKilocalories")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("restingHeartRate")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("sleepingSeconds")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("averageStressLevel")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("maxStressLevel")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("bodyBatteryChargedValue")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health
-                    .get("bodyBatteryDrainedValue")
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32),
-                health.to_string(),
-            ],
-        )
-        .map_err(|e| GarminError::Database(e.to_string()))?;
+        self.storage.parquet.upsert_daily_health(&[record])?;
 
         Ok(())
     }
@@ -828,9 +922,6 @@ impl SyncEngine {
         let training_status: Option<serde_json::Value> =
             self.client.get_json(&self.token, &status_path).await.ok();
 
-        let conn = self.db.connection();
-        let conn = conn.lock().unwrap();
-
         let vo2max_value = vo2max
             .as_ref()
             .and_then(|v| v.get("generic"))
@@ -855,51 +946,13 @@ impl SyncEngine {
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
 
-        let readiness_level = readiness_entry
-            .and_then(|e| e.get("level"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Extract training status from nested structure
-        let status_data = training_status
+        let training_status_str = training_status
             .as_ref()
             .and_then(|v| v.get("mostRecentTrainingStatus"))
             .and_then(|s| s.get("latestTrainingStatusData"))
             .and_then(|d| d.as_object())
-            .and_then(|m| m.values().next());
-
-        let status_phrase = status_data
-            .and_then(|e| e.get("trainingStatusFeedbackPhrase"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let load_dto = status_data.and_then(|e| e.get("acuteTrainingLoadDTO"));
-
-        let acute_load = load_dto
-            .and_then(|l| l.get("dailyTrainingLoadAcute"))
-            .and_then(|v| v.as_f64());
-
-        let chronic_load = load_dto
-            .and_then(|l| l.get("dailyTrainingLoadChronic"))
-            .and_then(|v| v.as_f64());
-
-        let load_ratio = load_dto
-            .and_then(|l| l.get("dailyAcuteChronicWorkloadRatio"))
-            .and_then(|v| v.as_f64());
-
-        let load_ratio_status = load_dto
-            .and_then(|l| l.get("acwrStatus"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Extract load focus
-        let load_focus = training_status
-            .as_ref()
-            .and_then(|v| v.get("mostRecentTrainingLoadBalance"))
-            .and_then(|b| b.get("metricsTrainingLoadBalanceDTOMap"))
-            .and_then(|m| m.as_object())
             .and_then(|m| m.values().next())
-            .and_then(|e| e.get("trainingBalanceFeedbackPhrase"))
+            .and_then(|e| e.get("trainingStatusFeedbackPhrase"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -927,49 +980,26 @@ impl SyncEngine {
             .and_then(|v| v.as_f64())
             .map(|v| v as i32);
 
-        conn.execute(
-            "INSERT INTO performance_metrics (
-                profile_id, date, vo2max, fitness_age,
-                training_readiness, training_readiness_level,
-                training_status, acute_load, chronic_load,
-                load_ratio, load_ratio_status, load_focus,
-                race_5k_sec, race_10k_sec, race_half_sec, race_marathon_sec
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (profile_id, date) DO UPDATE SET
-                vo2max = EXCLUDED.vo2max,
-                fitness_age = EXCLUDED.fitness_age,
-                training_readiness = EXCLUDED.training_readiness,
-                training_readiness_level = EXCLUDED.training_readiness_level,
-                training_status = EXCLUDED.training_status,
-                acute_load = EXCLUDED.acute_load,
-                chronic_load = EXCLUDED.chronic_load,
-                load_ratio = EXCLUDED.load_ratio,
-                load_ratio_status = EXCLUDED.load_ratio_status,
-                load_focus = EXCLUDED.load_focus,
-                race_5k_sec = EXCLUDED.race_5k_sec,
-                race_10k_sec = EXCLUDED.race_10k_sec,
-                race_half_sec = EXCLUDED.race_half_sec,
-                race_marathon_sec = EXCLUDED.race_marathon_sec",
-            duckdb::params![
-                self.profile_id,
-                date.to_string(),
-                vo2max_value,
-                fitness_age,
-                readiness_score,
-                readiness_level,
-                status_phrase,
-                acute_load,
-                chronic_load,
-                load_ratio,
-                load_ratio_status,
-                load_focus,
-                race_5k,
-                race_10k,
-                race_half,
-                race_marathon,
-            ],
-        )
-        .map_err(|e| GarminError::Database(e.to_string()))?;
+        let record = PerformanceMetrics {
+            id: None,
+            profile_id: self.profile_id,
+            date,
+            vo2max: vo2max_value,
+            fitness_age,
+            training_readiness: readiness_score,
+            training_status: training_status_str,
+            lactate_threshold_hr: None,
+            lactate_threshold_pace: None,
+            race_5k_sec: race_5k,
+            race_10k_sec: race_10k,
+            race_half_sec: race_half,
+            race_marathon_sec: race_marathon,
+            endurance_score: None,
+            hill_score: None,
+            raw_json: None,
+        };
+
+        self.storage.parquet.upsert_performance_metrics(&[record])?;
 
         Ok(())
     }
@@ -1018,7 +1048,7 @@ impl SyncOptions {
             sync_health: true,
             sync_performance: true,
             fancy_ui: true,
-            concurrency: 3,
+            concurrency: 4,
             ..Default::default()
         }
     }
@@ -1030,7 +1060,7 @@ impl SyncOptions {
             sync_health: true,
             sync_performance: true,
             fancy_ui: false,
-            concurrency: 3,
+            concurrency: 4,
             ..Default::default()
         }
     }
@@ -1131,36 +1161,782 @@ fn update_progress_for_task(task: &SyncTask, progress: &SyncProgress) {
     };
 
     match &task.task_type {
-        SyncTaskType::Activities { .. } => progress.activities.set_last_item(desc),
-        SyncTaskType::DownloadGpx { .. } => progress.gpx.set_last_item(desc),
-        SyncTaskType::DailyHealth { .. } => progress.health.set_last_item(desc),
-        SyncTaskType::Performance { .. } => progress.performance.set_last_item(desc),
+        SyncTaskType::Activities { .. } => {
+            progress.activities.set_current_item(desc.clone());
+            progress.activities.set_last_item(desc);
+        }
+        SyncTaskType::DownloadGpx { .. } => {
+            progress.gpx.set_current_item(desc.clone());
+            progress.gpx.set_last_item(desc);
+        }
+        SyncTaskType::DailyHealth { .. } => {
+            progress.health.set_current_item(desc.clone());
+            progress.health.set_last_item(desc);
+        }
+        SyncTaskType::Performance { .. } => {
+            progress.performance.set_current_item(desc.clone());
+            progress.performance.set_last_item(desc);
+        }
         _ => {}
     }
 }
 
 /// Mark a task as completed in progress
+#[allow(dead_code)]
 fn complete_progress_for_task(task: &SyncTask, progress: &SyncProgress) {
     match &task.task_type {
         SyncTaskType::Activities { .. } => {
             progress.activities.complete_one();
-            // Activities can spawn GPX downloads, so update GPX total
-            // This is handled dynamically when GPX tasks are added
+            progress.activities.clear_current_item();
         }
-        SyncTaskType::DownloadGpx { .. } => progress.gpx.complete_one(),
-        SyncTaskType::DailyHealth { .. } => progress.health.complete_one(),
-        SyncTaskType::Performance { .. } => progress.performance.complete_one(),
+        SyncTaskType::DownloadGpx { .. } => {
+            progress.gpx.complete_one();
+            progress.gpx.clear_current_item();
+        }
+        SyncTaskType::DailyHealth { .. } => {
+            progress.health.complete_one();
+            progress.health.clear_current_item();
+        }
+        SyncTaskType::Performance { .. } => {
+            progress.performance.complete_one();
+            progress.performance.clear_current_item();
+        }
         _ => {}
     }
 }
 
-/// Mark a task as failed in progress
-fn fail_progress_for_task(task: &SyncTask, progress: &SyncProgress) {
+/// Mark a task as failed in progress and record error details
+fn fail_progress_for_task(task: &SyncTask, progress: &SyncProgress, error: &str) {
+    let (stream_name, item_desc) = match &task.task_type {
+        SyncTaskType::Activities { start, limit } => {
+            progress.activities.fail_one();
+            progress.activities.clear_current_item();
+            ("Activities", format!("{}-{}", start, start + limit))
+        }
+        SyncTaskType::DownloadGpx { activity_id, activity_name, .. } => {
+            progress.gpx.fail_one();
+            progress.gpx.clear_current_item();
+            ("GPX", activity_name.clone().unwrap_or_else(|| activity_id.to_string()))
+        }
+        SyncTaskType::DailyHealth { date } => {
+            progress.health.fail_one();
+            progress.health.clear_current_item();
+            ("Health", date.to_string())
+        }
+        SyncTaskType::Performance { date } => {
+            progress.performance.fail_one();
+            progress.performance.clear_current_item();
+            ("Performance", date.to_string())
+        }
+        _ => return,
+    };
+
+    progress.add_error(stream_name, item_desc, error.to_string());
+}
+
+const MAX_IDLE_RETRIES: u32 = 10;
+
+fn should_exit_when_idle(idle_loops: u32, in_flight: usize) -> bool {
+    idle_loops >= MAX_IDLE_RETRIES && in_flight == 0
+}
+
+fn record_write_failure(data: &SyncData, progress: &SyncProgress, error: &str) {
+    match data {
+        SyncData::Activities { records, .. } => {
+            progress.activities.fail_one();
+            progress.activities.clear_current_item();
+            let item = records
+                .first()
+                .map(|r| r.activity_id.to_string())
+                .unwrap_or_else(|| "batch".to_string());
+            progress.add_error("Activities", item, error.to_string());
+        }
+        SyncData::Health { record, .. } => {
+            progress.health.fail_one();
+            progress.health.clear_current_item();
+            progress.add_error("Health", record.date.to_string(), error.to_string());
+        }
+        SyncData::Performance { record, .. } => {
+            progress.performance.fail_one();
+            progress.performance.clear_current_item();
+            progress.add_error("Performance", record.date.to_string(), error.to_string());
+        }
+        SyncData::TrackPoints { activity_id, date, .. } => {
+            progress.gpx.fail_one();
+            progress.gpx.clear_current_item();
+            progress.add_error(
+                "GPX",
+                format!("{} ({})", date, activity_id),
+                error.to_string(),
+            );
+        }
+    }
+}
+
+// =============================================================================
+// Producer/Consumer Pipeline
+// =============================================================================
+
+/// Producer loop: fetches data from Garmin API and sends to channel
+async fn producer_loop(
+    _id: usize,
+    queue: SharedTaskQueue,
+    rate_limiter: SharedRateLimiter,
+    client: GarminClient,
+    token: OAuth2Token,
+    tx: mpsc::Sender<SyncData>,
+    progress: SharedProgress,
+    display_name: Arc<String>,
+    profile_id: i32,
+    stats: Arc<TokioMutex<SyncStats>>,
+    in_flight: Arc<AtomicUsize>,
+) {
+    let mut empty_count = 0;
+
+    loop {
+        // Pop next task
+        let task = match queue.pop_round_robin().await {
+            Ok(Some(task)) => {
+                empty_count = 0; // Reset counter on successful pop
+                task
+            }
+            Ok(None) => {
+                // Queue is empty, but consumers might be adding new tasks
+                // Wait a bit and retry before giving up
+                empty_count += 1;
+                if should_exit_when_idle(
+                    empty_count,
+                    in_flight.load(Ordering::Relaxed),
+                ) {
+                    break; // No more tasks after multiple retries
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(e) => {
+                eprintln!("Queue error: {}", e);
+                break;
+            }
+        };
+
+        let task_id = task.id.unwrap();
+        in_flight.fetch_add(1, Ordering::Relaxed);
+
+        // Mark in progress
+        if let Err(e) = queue.mark_in_progress(task_id).await {
+            eprintln!("Failed to mark task in progress: {}", e);
+            continue;
+        }
+
+        // Update progress display
+        update_progress_for_task(&task, &progress);
+
+        // Acquire rate limiter permit
+        let _permit = rate_limiter.acquire().await;
+        progress.record_request();
+
+        // Fetch data based on task type
+        let result = fetch_task_data(
+            &task,
+            &client,
+            &token,
+            &display_name,
+            profile_id,
+        )
+        .await;
+
+        match result {
+            Ok(data) => {
+                rate_limiter.on_success();
+                // Send to consumer
+                if tx.send(data).await.is_err() {
+                    // Channel closed, consumer is done
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    let backoff = Duration::seconds(60);
+                    let _ = queue
+                        .mark_failed(task_id, "Consumer channel closed", backoff)
+                        .await;
+                    break;
+                }
+            }
+            Err(GarminError::RateLimited) => {
+                rate_limiter.on_rate_limit();
+                let backoff = Duration::seconds(60);
+                if let Err(e) = queue.mark_failed(task_id, "Rate limited", backoff).await {
+                    eprintln!("Failed to mark task as rate limited: {}", e);
+                }
+                fail_progress_for_task(&task, &progress, "Rate limited");
+                {
+                    let mut s = stats.lock().await;
+                    s.rate_limited += 1;
+                }
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                let backoff = Duration::seconds(60);
+                let error_msg = e.to_string();
+                if let Err(e) = queue.mark_failed(task_id, &error_msg, backoff).await {
+                    eprintln!("Failed to mark task as failed: {}", e);
+                }
+                fail_progress_for_task(&task, &progress, &error_msg);
+                {
+                    let mut s = stats.lock().await;
+                    s.failed += 1;
+                }
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Fetch data for a task from the Garmin API
+async fn fetch_task_data(
+    task: &SyncTask,
+    client: &GarminClient,
+    token: &OAuth2Token,
+    display_name: &str,
+    profile_id: i32,
+) -> Result<SyncData> {
+    let task_id = task.id.unwrap();
+
     match &task.task_type {
-        SyncTaskType::Activities { .. } => progress.activities.fail_one(),
-        SyncTaskType::DownloadGpx { .. } => progress.gpx.fail_one(),
-        SyncTaskType::DailyHealth { .. } => progress.health.fail_one(),
-        SyncTaskType::Performance { .. } => progress.performance.fail_one(),
-        _ => {}
+        SyncTaskType::Activities { start, limit } => {
+            let path = format!(
+                "/activitylist-service/activities/search/activities?limit={}&start={}",
+                limit, start
+            );
+            let activities: Vec<serde_json::Value> = client.get_json(token, &path).await?;
+
+            let mut records = Vec::new();
+            let mut gpx_tasks = Vec::new();
+
+            for activity in &activities {
+                // Parse activity
+                let parsed = parse_activity(activity, profile_id)?;
+                records.push(parsed);
+
+                // Queue GPX download for activities with GPS
+                if activity
+                    .get("hasPolyline")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    if let Some(id) = activity.get("activityId").and_then(|v| v.as_i64()) {
+                        let activity_name = activity
+                            .get("activityName")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let activity_date = activity
+                            .get("startTimeLocal")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.split(' ').next())
+                            .map(|s| s.to_string());
+
+                        gpx_tasks.push(SyncTask::new(
+                            profile_id,
+                            SyncTaskType::DownloadGpx {
+                                activity_id: id,
+                                activity_name,
+                                activity_date,
+                            },
+                        ));
+                    }
+                }
+            }
+
+            // Check if there's a next page
+            let next_page = if activities.len() == *limit as usize {
+                Some(SyncTask::new(
+                    profile_id,
+                    SyncTaskType::Activities {
+                        start: start + limit,
+                        limit: *limit,
+                    },
+                ))
+            } else {
+                None
+            };
+
+            Ok(SyncData::Activities {
+                records,
+                gpx_tasks,
+                next_page,
+                task_id,
+            })
+        }
+
+        SyncTaskType::DownloadGpx {
+            activity_id,
+            activity_date,
+            ..
+        } => {
+            let path = format!("/download-service/export/gpx/activity/{}", activity_id);
+            let gpx_bytes = client.download(token, &path).await?;
+            let gpx_data = String::from_utf8_lossy(&gpx_bytes);
+
+            // Parse activity date for partitioning
+            let date = activity_date
+                .as_ref()
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .unwrap_or_else(|| Utc::now().date_naive());
+
+            let points = parse_gpx(*activity_id, &gpx_data)?;
+
+            Ok(SyncData::TrackPoints {
+                activity_id: *activity_id,
+                date,
+                points,
+                task_id,
+            })
+        }
+
+        SyncTaskType::DailyHealth { date } => {
+            let path = format!(
+                "/usersummary-service/usersummary/daily/{}?calendarDate={}",
+                display_name, date
+            );
+
+            // Try to fetch health data - may return 404/error for dates without data
+            let health_result: std::result::Result<serde_json::Value, _> =
+                client.get_json(token, &path).await;
+
+            let health = match health_result {
+                Ok(data) => data,
+                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => {
+                    // No data for this date - store empty record to mark as synced
+                    serde_json::json!({})
+                }
+                Err(e) => return Err(e),
+            };
+
+            let record = DailyHealth {
+                id: None,
+                profile_id,
+                date: *date,
+                steps: health.get("totalSteps").and_then(|v| v.as_i64()).map(|v| v as i32),
+                step_goal: health.get("dailyStepGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
+                total_calories: health.get("totalKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+                active_calories: health.get("activeKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+                bmr_calories: health.get("bmrKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
+                resting_hr: health.get("restingHeartRate").and_then(|v| v.as_i64()).map(|v| v as i32),
+                sleep_seconds: health.get("sleepingSeconds").and_then(|v| v.as_i64()).map(|v| v as i32),
+                deep_sleep_seconds: None,
+                light_sleep_seconds: None,
+                rem_sleep_seconds: None,
+                sleep_score: None,
+                avg_stress: health.get("averageStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
+                max_stress: health.get("maxStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
+                body_battery_start: health.get("bodyBatteryChargedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
+                body_battery_end: health.get("bodyBatteryDrainedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
+                hrv_weekly_avg: None,
+                hrv_last_night: None,
+                hrv_status: None,
+                avg_respiration: health.get("averageRespirationValue").and_then(|v| v.as_f64()),
+                avg_spo2: health.get("averageSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
+                lowest_spo2: health.get("lowestSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
+                hydration_ml: health.get("hydrationIntakeGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
+                moderate_intensity_min: health.get("moderateIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
+                vigorous_intensity_min: health.get("vigorousIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
+                raw_json: Some(health),
+            };
+
+            Ok(SyncData::Health { record, task_id })
+        }
+
+        SyncTaskType::Performance { date } => {
+            // Fetch VO2 max
+            let vo2max: Option<serde_json::Value> = client
+                .get_json(token, "/metrics-service/metrics/maxmet/latest")
+                .await
+                .ok();
+
+            // Fetch race predictions
+            let race_predictions: Option<serde_json::Value> = client
+                .get_json(token, "/metrics-service/metrics/racepredictions/latest")
+                .await
+                .ok();
+
+            // Fetch training readiness
+            let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
+            let training_readiness: Option<serde_json::Value> =
+                client.get_json(token, &readiness_path).await.ok();
+
+            // Fetch training status
+            let status_path = format!(
+                "/metrics-service/metrics/trainingstatus/aggregated/{}",
+                date
+            );
+            let training_status: Option<serde_json::Value> =
+                client.get_json(token, &status_path).await.ok();
+
+            let vo2max_value = vo2max
+                .as_ref()
+                .and_then(|v| v.get("generic"))
+                .and_then(|v| v.get("vo2MaxValue"))
+                .and_then(|v| v.as_f64());
+
+            let fitness_age = vo2max
+                .as_ref()
+                .and_then(|v| v.get("generic"))
+                .and_then(|v| v.get("fitnessAge"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32);
+
+            let readiness_entry = training_readiness
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first());
+
+            let readiness_score = readiness_entry
+                .and_then(|e| e.get("score"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32);
+
+            let training_status_str = training_status
+                .as_ref()
+                .and_then(|v| v.get("mostRecentTrainingStatus"))
+                .and_then(|s| s.get("latestTrainingStatusData"))
+                .and_then(|d| d.as_object())
+                .and_then(|m| m.values().next())
+                .and_then(|e| e.get("trainingStatusFeedbackPhrase"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let race_5k = race_predictions
+                .as_ref()
+                .and_then(|v| v.get("time5K"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as i32);
+
+            let race_10k = race_predictions
+                .as_ref()
+                .and_then(|v| v.get("time10K"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as i32);
+
+            let race_half = race_predictions
+                .as_ref()
+                .and_then(|v| v.get("timeHalfMarathon"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as i32);
+
+            let race_marathon = race_predictions
+                .as_ref()
+                .and_then(|v| v.get("timeMarathon"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as i32);
+
+            let record = PerformanceMetrics {
+                id: None,
+                profile_id,
+                date: *date,
+                vo2max: vo2max_value,
+                fitness_age,
+                training_readiness: readiness_score,
+                training_status: training_status_str,
+                lactate_threshold_hr: None,
+                lactate_threshold_pace: None,
+                race_5k_sec: race_5k,
+                race_10k_sec: race_10k,
+                race_half_sec: race_half,
+                race_marathon_sec: race_marathon,
+                endurance_score: None,
+                hill_score: None,
+                raw_json: None,
+            };
+
+            Ok(SyncData::Performance { record, task_id })
+        }
+
+        _ => {
+            // Other task types not implemented for parallel yet
+            Err(GarminError::invalid_response("Unsupported task type for parallel sync"))
+        }
+    }
+}
+
+/// Parse activity JSON into Activity struct (standalone version for producer)
+fn parse_activity(activity: &serde_json::Value, profile_id: i32) -> Result<Activity> {
+    let activity_id = activity
+        .get("activityId")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| GarminError::invalid_response("Missing activityId"))?;
+
+    let start_time_local = activity
+        .get("startTimeLocal")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .map(|dt| dt.with_timezone(&Utc));
+
+    let start_time_gmt = activity
+        .get("startTimeGMT")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .map(|dt| dt.with_timezone(&Utc));
+
+    Ok(Activity {
+        activity_id,
+        profile_id,
+        activity_name: activity.get("activityName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        activity_type: activity.get("activityType").and_then(|v| v.get("typeKey")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+        start_time_local,
+        start_time_gmt,
+        duration_sec: activity.get("duration").and_then(|v| v.as_f64()),
+        distance_m: activity.get("distance").and_then(|v| v.as_f64()),
+        calories: activity.get("calories").and_then(|v| v.as_i64()).map(|v| v as i32),
+        avg_hr: activity.get("averageHR").and_then(|v| v.as_i64()).map(|v| v as i32),
+        max_hr: activity.get("maxHR").and_then(|v| v.as_i64()).map(|v| v as i32),
+        avg_speed: activity.get("averageSpeed").and_then(|v| v.as_f64()),
+        max_speed: activity.get("maxSpeed").and_then(|v| v.as_f64()),
+        elevation_gain: activity.get("elevationGain").and_then(|v| v.as_f64()),
+        elevation_loss: activity.get("elevationLoss").and_then(|v| v.as_f64()),
+        avg_cadence: activity.get("averageRunningCadenceInStepsPerMinute").and_then(|v| v.as_f64()),
+        avg_power: activity.get("avgPower").and_then(|v| v.as_i64()).map(|v| v as i32),
+        normalized_power: activity.get("normPower").and_then(|v| v.as_i64()).map(|v| v as i32),
+        training_effect: activity.get("aerobicTrainingEffect").and_then(|v| v.as_f64()),
+        training_load: activity.get("activityTrainingLoad").and_then(|v| v.as_f64()),
+        start_lat: activity.get("startLatitude").and_then(|v| v.as_f64()),
+        start_lon: activity.get("startLongitude").and_then(|v| v.as_f64()),
+        end_lat: activity.get("endLatitude").and_then(|v| v.as_f64()),
+        end_lon: activity.get("endLongitude").and_then(|v| v.as_f64()),
+        ground_contact_time: activity.get("avgGroundContactTime").and_then(|v| v.as_f64()),
+        vertical_oscillation: activity.get("avgVerticalOscillation").and_then(|v| v.as_f64()),
+        stride_length: activity.get("avgStrideLength").and_then(|v| v.as_f64()),
+        location_name: activity.get("locationName").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        raw_json: Some(activity.clone()),
+    })
+}
+
+/// Parse GPX data and return track points
+fn parse_gpx(activity_id: i64, gpx_data: &str) -> Result<Vec<TrackPoint>> {
+    use gpx::read;
+    use std::io::BufReader;
+
+    let reader = BufReader::new(gpx_data.as_bytes());
+    let gpx = read(reader).map_err(|e| GarminError::invalid_response(e.to_string()))?;
+
+    let mut points = Vec::new();
+
+    for track in gpx.tracks {
+        for segment in track.segments {
+            for point in segment.points {
+                let timestamp = point
+                    .time
+                    .map(|t| {
+                        DateTime::parse_from_rfc3339(&t.format().unwrap_or_default())
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+
+                points.push(TrackPoint {
+                    id: None,
+                    activity_id,
+                    timestamp,
+                    lat: Some(point.point().y()),
+                    lon: Some(point.point().x()),
+                    elevation: point.elevation,
+                    heart_rate: None,
+                    cadence: None,
+                    power: None,
+                    speed: None,
+                });
+            }
+        }
+    }
+
+    Ok(points)
+}
+
+/// Consumer loop: receives data from channel and writes to Parquet
+async fn consumer_loop(
+    _id: usize,
+    rx: Arc<TokioMutex<mpsc::Receiver<SyncData>>>,
+    parquet: Arc<ParquetStore>,
+    queue: SharedTaskQueue,
+    stats: Arc<TokioMutex<SyncStats>>,
+    progress: SharedProgress,
+    in_flight: Arc<AtomicUsize>,
+) {
+    loop {
+        // Receive next data item
+        let data = {
+            let mut rx = rx.lock().await;
+            rx.recv().await
+        };
+
+        let data = match data {
+            Some(d) => d,
+            None => break, // Channel closed, all producers done
+        };
+
+        // Process and write data
+        let result = match &data {
+            SyncData::Activities {
+                records,
+                gpx_tasks,
+                next_page,
+                task_id,
+            } => {
+                // Write activities to Parquet
+                let write_result = parquet.upsert_activities_async(records).await;
+
+                if write_result.is_ok() {
+                    // Queue GPX tasks and update progress totals
+                    let gpx_count = gpx_tasks.len() as u32;
+                    for gpx_task in gpx_tasks {
+                        if let Err(e) = queue.push(gpx_task.clone()).await {
+                            eprintln!("Failed to queue GPX task: {}", e);
+                        }
+                    }
+                    if gpx_count > 0 {
+                        progress.gpx.add_total(gpx_count);
+                    }
+
+                    // Queue next page if there is one
+                    if let Some(next) = next_page {
+                        if let Err(e) = queue.push(next.clone()).await {
+                            eprintln!("Failed to queue next page: {}", e);
+                        }
+                        progress.activities.add_total(1);
+                    }
+                }
+
+                (write_result, *task_id, "Activities")
+            }
+
+            SyncData::Health { record, task_id } => {
+                let result = parquet.upsert_daily_health_async(&[record.clone()]).await;
+                (result, *task_id, "Health")
+            }
+
+            SyncData::Performance { record, task_id } => {
+                let result = parquet.upsert_performance_metrics_async(&[record.clone()]).await;
+                (result, *task_id, "Performance")
+            }
+
+            SyncData::TrackPoints {
+                date,
+                points,
+                task_id,
+                ..
+            } => {
+                let result = parquet.write_track_points_async(*date, points).await;
+                (result, *task_id, "GPX")
+            }
+        };
+
+        let (write_result, task_id, task_type) = result;
+
+        match write_result {
+            Ok(()) => {
+                // Mark task completed
+                if let Err(e) = queue.mark_completed(task_id).await {
+                    eprintln!("Failed to mark task completed: {}", e);
+                }
+
+                // Update stats
+                {
+                    let mut s = stats.lock().await;
+                    s.completed += 1;
+                }
+
+                // Update progress based on task type
+                match task_type {
+                    "Activities" => {
+                        progress.activities.complete_one();
+                        progress.activities.clear_current_item();
+                    }
+                    "Health" => {
+                        progress.health.complete_one();
+                        progress.health.clear_current_item();
+                    }
+                    "Performance" => {
+                        progress.performance.complete_one();
+                        progress.performance.clear_current_item();
+                    }
+                    "GPX" => {
+                        progress.gpx.complete_one();
+                        progress.gpx.clear_current_item();
+                    }
+                    _ => {}
+                }
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                // Mark task failed
+                let backoff = Duration::seconds(60);
+                let error_msg = e.to_string();
+                if let Err(e) = queue.mark_failed(task_id, &error_msg, backoff).await {
+                    eprintln!("Failed to mark task as failed: {}", e);
+                }
+
+                // Update stats
+                {
+                    let mut s = stats.lock().await;
+                    s.failed += 1;
+                }
+
+                record_write_failure(&data, &progress, &error_msg);
+                eprintln!("Write error for {}: {}", task_type, error_msg);
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn test_should_exit_when_idle_requires_no_inflight() {
+        assert!(!should_exit_when_idle(MAX_IDLE_RETRIES, 1));
+        assert!(should_exit_when_idle(MAX_IDLE_RETRIES, 0));
+        assert!(!should_exit_when_idle(MAX_IDLE_RETRIES - 1, 0));
+    }
+
+    #[test]
+    fn test_record_write_failure_updates_progress() {
+        let progress = SyncProgress::new();
+        let record = DailyHealth {
+            id: None,
+            profile_id: 1,
+            date: NaiveDate::from_ymd_opt(2024, 12, 15).unwrap(),
+            steps: None,
+            step_goal: None,
+            total_calories: None,
+            active_calories: None,
+            bmr_calories: None,
+            resting_hr: None,
+            sleep_seconds: None,
+            deep_sleep_seconds: None,
+            light_sleep_seconds: None,
+            rem_sleep_seconds: None,
+            sleep_score: None,
+            avg_stress: None,
+            max_stress: None,
+            body_battery_start: None,
+            body_battery_end: None,
+            hrv_weekly_avg: None,
+            hrv_last_night: None,
+            hrv_status: None,
+            avg_respiration: None,
+            avg_spo2: None,
+            lowest_spo2: None,
+            hydration_ml: None,
+            moderate_intensity_min: None,
+            vigorous_intensity_min: None,
+            raw_json: None,
+        };
+
+        let data = SyncData::Health { record, task_id: 1 };
+        record_write_failure(&data, &progress, "write failed");
+
+        assert_eq!(progress.health.get_failed(), 1);
+        let errors = progress.get_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].stream, "Health");
     }
 }

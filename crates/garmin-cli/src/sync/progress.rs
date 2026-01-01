@@ -1,8 +1,27 @@
 //! Progress tracking for parallel sync with atomic counters
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Planning phase steps
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanningStep {
+    FetchingProfile,
+    FindingOldestActivity,
+    PlanningActivities,
+    PlanningHealth { days: u32 },
+    PlanningPerformance { weeks: u32 },
+    Complete,
+}
+
+/// Error entry with details
+#[derive(Debug, Clone)]
+pub struct ErrorEntry {
+    pub stream: &'static str,
+    pub item: String,
+    pub error: String,
+}
 
 /// Progress tracking for a single data stream
 #[derive(Debug)]
@@ -17,6 +36,8 @@ pub struct StreamProgress {
     pub failed: AtomicU32,
     /// Last processed item description
     last_item: Mutex<String>,
+    /// Current item being processed
+    current_item: Mutex<String>,
 }
 
 impl StreamProgress {
@@ -28,6 +49,7 @@ impl StreamProgress {
             completed: AtomicU32::new(0),
             failed: AtomicU32::new(0),
             last_item: Mutex::new(String::new()),
+            current_item: Mutex::new(String::new()),
         }
     }
 
@@ -60,6 +82,23 @@ impl StreamProgress {
     /// Get the last processed item description
     pub fn get_last_item(&self) -> String {
         self.last_item.lock().unwrap().clone()
+    }
+
+    /// Set the current item being processed
+    pub fn set_current_item(&self, desc: String) {
+        let mut current = self.current_item.lock().unwrap();
+        *current = desc;
+    }
+
+    /// Get the current item being processed
+    pub fn get_current_item(&self) -> String {
+        self.current_item.lock().unwrap().clone()
+    }
+
+    /// Clear the current item (when done processing)
+    pub fn clear_current_item(&self) {
+        let mut current = self.current_item.lock().unwrap();
+        current.clear();
     }
 
     /// Get completion percentage (0-100)
@@ -116,6 +155,18 @@ pub struct SyncProgress {
     pub rate_history: Mutex<Vec<u32>>,
     /// Total requests made
     pub total_requests: AtomicU32,
+    /// Error details for display
+    pub errors: Mutex<Vec<ErrorEntry>>,
+    /// Storage path for display
+    pub storage_path: Mutex<String>,
+    /// Whether we're in planning phase
+    pub is_planning: AtomicBool,
+    /// Whether shutdown has been requested
+    pub shutdown: AtomicBool,
+    /// Current planning step
+    pub planning_step: Mutex<PlanningStep>,
+    /// Oldest activity date found during planning
+    pub oldest_activity_date: Mutex<Option<String>>,
 }
 
 impl SyncProgress {
@@ -123,7 +174,7 @@ impl SyncProgress {
     pub fn new() -> Self {
         Self {
             activities: StreamProgress::new("Activities"),
-            gpx: StreamProgress::new("GPX Downloads"),
+            gpx: StreamProgress::new("GPX"),
             health: StreamProgress::new("Health"),
             performance: StreamProgress::new("Performance"),
             start_time: Instant::now(),
@@ -131,7 +182,54 @@ impl SyncProgress {
             date_range: Mutex::new(String::new()),
             rate_history: Mutex::new(vec![0; 60]),
             total_requests: AtomicU32::new(0),
+            errors: Mutex::new(Vec::new()),
+            storage_path: Mutex::new(String::new()),
+            is_planning: AtomicBool::new(true),
+            shutdown: AtomicBool::new(false),
+            planning_step: Mutex::new(PlanningStep::FetchingProfile),
+            oldest_activity_date: Mutex::new(None),
         }
+    }
+
+    /// Set planning step
+    pub fn set_planning_step(&self, step: PlanningStep) {
+        *self.planning_step.lock().unwrap() = step;
+    }
+
+    /// Get current planning step
+    pub fn get_planning_step(&self) -> PlanningStep {
+        self.planning_step.lock().unwrap().clone()
+    }
+
+    /// Mark planning as complete
+    pub fn finish_planning(&self) {
+        self.is_planning.store(false, Ordering::Relaxed);
+        *self.planning_step.lock().unwrap() = PlanningStep::Complete;
+    }
+
+    /// Check if still planning
+    pub fn is_planning(&self) -> bool {
+        self.is_planning.load(Ordering::Relaxed)
+    }
+
+    /// Request that the TUI shuts down
+    pub fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    /// Check if shutdown has been requested
+    pub fn should_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::Relaxed)
+    }
+
+    /// Set oldest activity date found
+    pub fn set_oldest_activity_date(&self, date: &str) {
+        *self.oldest_activity_date.lock().unwrap() = Some(date.to_string());
+    }
+
+    /// Get oldest activity date
+    pub fn get_oldest_activity_date(&self) -> Option<String> {
+        self.oldest_activity_date.lock().unwrap().clone()
     }
 
     /// Set profile name
@@ -154,6 +252,48 @@ impl SyncProgress {
     /// Get date range
     pub fn get_date_range(&self) -> String {
         self.date_range.lock().unwrap().clone()
+    }
+
+    /// Set storage path
+    pub fn set_storage_path(&self, path: &str) {
+        let mut storage = self.storage_path.lock().unwrap();
+        *storage = path.to_string();
+    }
+
+    /// Get storage path
+    pub fn get_storage_path(&self) -> String {
+        self.storage_path.lock().unwrap().clone()
+    }
+
+    /// Add an error entry
+    pub fn add_error(&self, stream: &'static str, item: String, error: String) {
+        let mut errors = self.errors.lock().unwrap();
+        errors.push(ErrorEntry { stream, item, error });
+    }
+
+    /// Get all errors
+    pub fn get_errors(&self) -> Vec<ErrorEntry> {
+        self.errors.lock().unwrap().clone()
+    }
+
+    /// Get current task description (finds first active stream)
+    pub fn get_current_task(&self) -> Option<String> {
+        // Check streams in order of typical processing
+        let streams = [
+            &self.activities,
+            &self.gpx,
+            &self.health,
+            &self.performance,
+        ];
+
+        for stream in streams {
+            let current = stream.get_current_item();
+            if !current.is_empty() {
+                return Some(format!("{}: {}", stream.name, current));
+            }
+        }
+
+        None
     }
 
     /// Record a request for rate tracking
@@ -287,6 +427,19 @@ impl SyncProgress {
 impl Default for SyncProgress {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Display for PlanningStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanningStep::FetchingProfile => write!(f, "Fetching profile..."),
+            PlanningStep::FindingOldestActivity => write!(f, "Finding oldest activity..."),
+            PlanningStep::PlanningActivities => write!(f, "Planning activity sync..."),
+            PlanningStep::PlanningHealth { days } => write!(f, "Planning health sync ({} days)...", days),
+            PlanningStep::PlanningPerformance { weeks } => write!(f, "Planning performance sync ({} weeks)...", weeks),
+            PlanningStep::Complete => write!(f, "Planning complete"),
+        }
     }
 }
 

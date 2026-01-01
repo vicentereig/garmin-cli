@@ -500,7 +500,7 @@ async fn main() -> garmin_cli::Result<()> {
     };
 
     if let Err(e) = result {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {}", garmin_cli::error::format_user_error(&e));
         std::process::exit(1);
     }
 

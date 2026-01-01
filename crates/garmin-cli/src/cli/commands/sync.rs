@@ -4,10 +4,9 @@ use chrono::NaiveDate;
 
 use crate::client::GarminClient;
 use crate::config::CredentialStore;
-use crate::db::default_db_path;
 use crate::error::Result;
+use crate::storage::{default_storage_path, Storage, SyncDb};
 use crate::sync::{SyncEngine, SyncOptions, TaskQueue};
-use crate::Database;
 
 use super::auth::refresh_token;
 
@@ -27,14 +26,16 @@ pub async fn run(
     let store = CredentialStore::new(profile.clone())?;
     let (oauth1, oauth2) = refresh_token(&store).await?;
 
-    // Open database
-    let db_path = db_path.unwrap_or_else(|| default_db_path().unwrap());
-    println!("Using database: {}", db_path);
+    // Open storage
+    let storage_path = db_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_storage_path);
 
-    let db = Database::open(&db_path)?;
+    if simple {
+        println!("Using storage: {}", storage_path.display());
+    }
 
-    // Get or create profile
-    let profile_id = get_or_create_profile(&db, profile.as_deref())?;
+    let storage = Storage::open(storage_path)?;
 
     // Build sync options
     let sync_all = !activities && !health && !performance;
@@ -47,7 +48,7 @@ pub async fn run(
         dry_run,
         force: false,
         fancy_ui: !simple, // Use fancy TUI unless --simple is specified
-        concurrency: 3,
+        concurrency: 4,
     };
 
     if dry_run {
@@ -56,7 +57,7 @@ pub async fn run(
 
     // Create sync engine
     let client = GarminClient::new(&oauth1.domain);
-    let mut engine = SyncEngine::new(db, client, oauth2, profile_id);
+    let mut engine = SyncEngine::with_storage(storage, client, oauth2)?;
 
     if !simple {
         // TUI mode - less initial output
@@ -75,90 +76,77 @@ pub async fn run(
 
 /// Show sync status
 pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<()> {
-    let db_path = db_path.unwrap_or_else(|| default_db_path().unwrap());
+    let storage_path = db_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_storage_path);
 
-    if !std::path::Path::new(&db_path).exists() {
-        println!("No database found at: {}", db_path);
+    if !storage_path.exists() {
+        println!("No storage found at: {}", storage_path.display());
         println!("Run 'garmin sync' to create one.");
         return Ok(());
     }
 
-    let db = Database::open(&db_path)?;
-    let conn = db.connection();
-    let conn = conn.lock().unwrap();
+    let sync_db_path = storage_path.join("sync.db");
+    if !sync_db_path.exists() {
+        println!("No sync database found at: {}", sync_db_path.display());
+        println!("Run 'garmin sync' to create one.");
+        return Ok(());
+    }
+
+    let sync_db = SyncDb::open(&sync_db_path)?;
 
     // Get profile info
     let profile_name = profile.as_deref().unwrap_or("default");
+    let profile_id = sync_db.get_profile_id(profile_name)?;
 
-    // Count activities
-    let activity_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0))
-        .unwrap_or(0);
+    // Count Parquet files
+    let activities_path = storage_path.join("activities");
+    let activity_files = if activities_path.exists() {
+        std::fs::read_dir(&activities_path)
+            .map(|rd| rd.filter(|e| e.is_ok()).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    // Count health days
-    let health_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM daily_health", [], |row| row.get(0))
-        .unwrap_or(0);
+    let health_path = storage_path.join("daily_health");
+    let health_files = if health_path.exists() {
+        std::fs::read_dir(&health_path)
+            .map(|rd| rd.filter(|e| e.is_ok()).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    // Count track points
-    let trackpoint_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM track_points", [], |row| row.get(0))
-        .unwrap_or(0);
+    let track_points_path = storage_path.join("track_points");
+    let track_files = if track_points_path.exists() {
+        std::fs::read_dir(&track_points_path)
+            .map(|rd| rd.filter(|e| e.is_ok()).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     // Get pending tasks
-    let pending_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sync_tasks WHERE status IN ('pending', 'failed')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let pending_count = if let Some(pid) = profile_id {
+        sync_db.count_pending_tasks(pid)?
+    } else {
+        0
+    };
 
-    println!("Database: {}", db_path);
+    println!("Storage: {}", storage_path.display());
     println!("Profile: {}", profile_name);
     println!();
-    println!("Data stored:");
-    println!("  Activities:    {:>8}", activity_count);
-    println!("  Health days:   {:>8}", health_count);
-    println!("  Track points:  {:>8}", trackpoint_count);
+    println!("Parquet files:");
+    println!("  Activity partitions:    {:>4}", activity_files);
+    println!("  Health partitions:      {:>4}", health_files);
+    println!("  Track point partitions: {:>4}", track_files);
     println!();
     if pending_count > 0 {
         println!("Pending sync tasks: {}", pending_count);
     }
 
     Ok(())
-}
-
-/// Get or create profile in database
-fn get_or_create_profile(db: &Database, profile_name: Option<&str>) -> Result<i32> {
-    let conn = db.connection();
-    let conn = conn.lock().unwrap();
-
-    let name = profile_name.unwrap_or("default");
-
-    // Try to get existing profile
-    let existing = conn.query_row(
-        "SELECT profile_id FROM profiles WHERE display_name = ?",
-        duckdb::params![name],
-        |row| row.get::<_, i32>(0),
-    );
-
-    match existing {
-        Ok(id) => Ok(id),
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            // Create new profile with RETURNING to get the generated ID
-            let id: i32 = conn
-                .query_row(
-                    "INSERT INTO profiles (display_name) VALUES (?) RETURNING profile_id",
-                    duckdb::params![name],
-                    |row| row.get(0),
-                )
-                .map_err(|e| crate::GarminError::Database(e.to_string()))?;
-
-            Ok(id)
-        }
-        Err(e) => Err(crate::GarminError::Database(e.to_string())),
-    }
 }
 
 /// Parse date string to NaiveDate
@@ -168,15 +156,18 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
 
 /// Reset failed tasks to pending
 pub async fn reset(db_path: Option<String>) -> Result<()> {
-    let db_path = db_path.unwrap_or_else(|| default_db_path().unwrap());
+    let storage_path = db_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_storage_path);
 
-    if !std::path::Path::new(&db_path).exists() {
-        println!("No database found at: {}", db_path);
+    let sync_db_path = storage_path.join("sync.db");
+    if !sync_db_path.exists() {
+        println!("No sync database found at: {}", sync_db_path.display());
         return Ok(());
     }
 
-    let db = Database::open(&db_path)?;
-    let queue = TaskQueue::new(db);
+    let sync_db = SyncDb::open(&sync_db_path)?;
+    let queue = TaskQueue::new(sync_db, 1); // profile_id doesn't matter for reset
 
     let reset_count = queue.reset_failed()?;
     println!("Reset {} failed tasks to pending", reset_count);
@@ -186,15 +177,18 @@ pub async fn reset(db_path: Option<String>) -> Result<()> {
 
 /// Clear all pending tasks
 pub async fn clear(db_path: Option<String>) -> Result<()> {
-    let db_path = db_path.unwrap_or_else(|| default_db_path().unwrap());
+    let storage_path = db_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_storage_path);
 
-    if !std::path::Path::new(&db_path).exists() {
-        println!("No database found at: {}", db_path);
+    let sync_db_path = storage_path.join("sync.db");
+    if !sync_db_path.exists() {
+        println!("No sync database found at: {}", sync_db_path.display());
         return Ok(());
     }
 
-    let db = Database::open(&db_path)?;
-    let queue = TaskQueue::new(db);
+    let sync_db = SyncDb::open(&sync_db_path)?;
+    let queue = TaskQueue::new(sync_db, 1); // profile_id doesn't matter for clear
 
     let cleared = queue.clear_pending()?;
     println!("Cleared {} pending tasks", cleared);
