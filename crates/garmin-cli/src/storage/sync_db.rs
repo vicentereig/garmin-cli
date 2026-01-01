@@ -391,7 +391,7 @@ impl SyncDb {
         Ok((pending, in_progress, completed, failed))
     }
 
-    /// Count pending/in_progress tasks by type
+    /// Count pending/in_progress/failed tasks by type
     ///
     /// Returns (activities, gpx, health, performance) counts
     pub fn count_tasks_by_type(&self, profile_id: i32) -> Result<(u32, u32, u32, u32)> {
@@ -399,7 +399,7 @@ impl SyncDb {
             .conn
             .prepare(
                 "SELECT task_type, COUNT(*) FROM sync_tasks
-                 WHERE profile_id = ? AND status IN ('pending', 'in_progress')
+                 WHERE profile_id = ? AND status IN ('pending', 'in_progress', 'failed')
                  GROUP BY task_type",
             )
             .map_err(|e| GarminError::Database(format!("Failed to prepare query: {}", e)))?;
@@ -623,5 +623,21 @@ mod tests {
 
         let popped_health = db.pop_task_by_type(1, "daily_health").unwrap().unwrap();
         assert_eq!(popped_health.id, Some(id_health));
+    }
+
+    #[test]
+    fn test_count_tasks_by_type_includes_failed() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let task = SyncTask::new(1, SyncTaskType::DailyHealth {
+            date: NaiveDate::from_ymd_opt(2024, 12, 15).unwrap(),
+        });
+        let id = db.push_task(&task).unwrap();
+
+        db.mark_task_in_progress(id).unwrap();
+        db.mark_task_failed(id, "boom", 60).unwrap();
+
+        let (_activities, _gpx, health, _perf) = db.count_tasks_by_type(1).unwrap();
+        assert_eq!(health, 1);
     }
 }

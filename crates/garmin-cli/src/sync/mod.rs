@@ -338,6 +338,8 @@ impl SyncEngine {
             let display_name = Arc::clone(&display_name);
             let stats = Arc::clone(&stats);
             let in_flight = Arc::clone(&in_flight);
+            let parquet = Arc::clone(&parquet);
+            let force = opts.force;
 
             producer_handles.push(tokio::spawn(async move {
                 producer_loop(
@@ -352,6 +354,8 @@ impl SyncEngine {
                     profile_id,
                     stats,
                     in_flight,
+                    parquet,
+                    force,
                 )
                 .await
             }));
@@ -534,13 +538,13 @@ impl SyncEngine {
 
         // Plan health sync
         if opts.sync_health {
-            let health_tasks = self.plan_health_sync(from_date, to_date)?;
+            let health_tasks = self.plan_health_sync(from_date, to_date, opts.force)?;
             println!("  Planning health sync: {} days to fetch", health_tasks);
         }
 
         // Plan performance sync
         if opts.sync_performance {
-            let perf_tasks = self.plan_performance_sync(from_date, to_date)?;
+            let perf_tasks = self.plan_performance_sync(from_date, to_date, opts.force)?;
             println!("  Planning performance sync: {} weeks to fetch", perf_tasks);
         }
 
@@ -569,14 +573,14 @@ impl SyncEngine {
         if opts.sync_health {
             let total_days = (to_date - from_date).num_days() as u32 + 1;
             progress.set_planning_step(PlanningStep::PlanningHealth { days: total_days });
-            self.plan_health_sync(from_date, to_date)?;
+            self.plan_health_sync(from_date, to_date, opts.force)?;
         }
 
         // Plan performance sync
         if opts.sync_performance {
             let total_weeks = ((to_date - from_date).num_days() / 7) as u32 + 1;
             progress.set_planning_step(PlanningStep::PlanningPerformance { weeks: total_weeks });
-            self.plan_performance_sync(from_date, to_date)?;
+            self.plan_performance_sync(from_date, to_date, opts.force)?;
         }
 
         Ok(())
@@ -597,29 +601,31 @@ impl SyncEngine {
     }
 
     /// Plan health sync tasks for date range, returns count of tasks added
-    fn plan_health_sync(&self, from: NaiveDate, to: NaiveDate) -> Result<u32> {
+    fn plan_health_sync(&self, from: NaiveDate, to: NaiveDate, force: bool) -> Result<u32> {
         let mut count = 0;
         let mut date = from;
         while date <= to {
-            // For now, always queue (we'll handle duplicates in upsert)
-            // In future, could check Parquet files for existing data
-            let task = SyncTask::new(self.profile_id, SyncTaskType::DailyHealth { date });
-            self.queue.push(task)?;
-            count += 1;
+            if force || !self.storage.parquet.has_daily_health(self.profile_id, date)? {
+                let task = SyncTask::new(self.profile_id, SyncTaskType::DailyHealth { date });
+                self.queue.push(task)?;
+                count += 1;
+            }
             date += Duration::days(1);
         }
         Ok(count)
     }
 
     /// Plan performance sync tasks, returns count of tasks added
-    fn plan_performance_sync(&self, from: NaiveDate, to: NaiveDate) -> Result<u32> {
+    fn plan_performance_sync(&self, from: NaiveDate, to: NaiveDate, force: bool) -> Result<u32> {
         // Performance metrics don't change daily, sync weekly
         let mut count = 0;
         let mut date = from;
         while date <= to {
-            let task = SyncTask::new(self.profile_id, SyncTaskType::Performance { date });
-            self.queue.push(task)?;
-            count += 1;
+            if force || !self.storage.parquet.has_performance_metrics(self.profile_id, date)? {
+                let task = SyncTask::new(self.profile_id, SyncTaskType::Performance { date });
+                self.queue.push(task)?;
+                count += 1;
+            }
             date += Duration::days(7);
         }
         Ok(count)
@@ -675,6 +681,14 @@ impl SyncEngine {
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.split(' ').next())
                         .map(|s| s.to_string());
+
+                    if let Some(ref date_str) = activity_date {
+                        if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                            if self.storage.parquet.has_track_points(id, date)? {
+                                continue;
+                            }
+                        }
+                    }
 
                     let task = SyncTask::new(
                         self.profile_id,
@@ -1290,6 +1304,8 @@ async fn producer_loop(
     profile_id: i32,
     stats: Arc<TokioMutex<SyncStats>>,
     in_flight: Arc<AtomicUsize>,
+    parquet: Arc<ParquetStore>,
+    force: bool,
 ) {
     let mut empty_count = 0;
 
@@ -1330,6 +1346,43 @@ async fn producer_loop(
 
         // Update progress display
         update_progress_for_task(&task, &progress);
+
+        // Skip tasks that already exist unless forcing
+        if !force {
+            let should_skip = match &task.task_type {
+                SyncTaskType::DailyHealth { date } => {
+                    parquet.has_daily_health(profile_id, *date).unwrap_or(false)
+                }
+                SyncTaskType::Performance { date } => {
+                    parquet
+                        .has_performance_metrics(profile_id, *date)
+                        .unwrap_or(false)
+                }
+                SyncTaskType::DownloadGpx {
+                    activity_id,
+                    activity_date,
+                    ..
+                } => activity_date
+                    .as_ref()
+                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                    .and_then(|date| parquet.has_track_points(*activity_id, date).ok())
+                    .unwrap_or(false),
+                _ => false,
+            };
+
+            if should_skip {
+                if let Err(e) = queue.mark_completed(task_id).await {
+                    eprintln!("Failed to mark task completed: {}", e);
+                }
+                complete_progress_for_task(&task, &progress);
+                {
+                    let mut s = stats.lock().await;
+                    s.completed += 1;
+                }
+                in_flight.fetch_sub(1, Ordering::Relaxed);
+                continue;
+            }
+        }
 
         // Acquire rate limiter permit
         let _permit = rate_limiter.acquire().await;
@@ -1783,14 +1836,33 @@ async fn consumer_loop(
 
                 if write_result.is_ok() {
                     // Queue GPX tasks and update progress totals
-                    let gpx_count = gpx_tasks.len() as u32;
+                    let mut gpx_added = 0u32;
                     for gpx_task in gpx_tasks {
+                        let should_skip = match &gpx_task.task_type {
+                            SyncTaskType::DownloadGpx {
+                                activity_id,
+                                activity_date,
+                                ..
+                            } => activity_date
+                                .as_ref()
+                                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                                .and_then(|date| parquet.has_track_points(*activity_id, date).ok())
+                                .unwrap_or(false),
+                            _ => false,
+                        };
+
+                        if should_skip {
+                            continue;
+                        }
+
                         if let Err(e) = queue.push(gpx_task.clone()).await {
                             eprintln!("Failed to queue GPX task: {}", e);
+                        } else {
+                            gpx_added += 1;
                         }
                     }
-                    if gpx_count > 0 {
-                        progress.gpx.add_total(gpx_count);
+                    if gpx_added > 0 {
+                        progress.gpx.add_total(gpx_added);
                     }
 
                     // Queue next page if there is one
