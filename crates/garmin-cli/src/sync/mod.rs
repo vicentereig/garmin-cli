@@ -2261,7 +2261,9 @@ fn parse_sleep_metrics(
     (total, deep, light, rem, score)
 }
 
-fn parse_hrv_metrics(value: Option<&serde_json::Value>) -> (Option<i32>, Option<i32>, Option<String>) {
+fn parse_hrv_metrics(
+    value: Option<&serde_json::Value>,
+) -> (Option<i32>, Option<i32>, Option<String>) {
     let summary = value
         .and_then(|v| v.get("hrvSummary"))
         .or(value);
@@ -2272,7 +2274,10 @@ fn parse_hrv_metrics(value: Option<&serde_json::Value>) -> (Option<i32>, Option<
     };
 
     let weekly_avg = summary.get("weeklyAvg").and_then(value_to_i32);
-    let last_night = summary.get("lastNight").and_then(value_to_i32);
+    let last_night = summary
+        .get("lastNight")
+        .or_else(|| summary.get("lastNightAvg"))
+        .and_then(value_to_i32);
     let status = summary
         .get("status")
         .and_then(|v| v.as_str())
@@ -3212,6 +3217,22 @@ mod tests {
             }
             _ => panic!("unexpected data type"),
         }
+    }
+
+    #[test]
+    fn test_parse_hrv_metrics_reads_last_night_avg() {
+        let payload = json!({
+            "hrvSummary": {
+                "weeklyAvg": 60,
+                "lastNightAvg": 58,
+                "status": "BALANCED"
+            }
+        });
+
+        let (weekly_avg, last_night, status) = parse_hrv_metrics(Some(&payload));
+        assert_eq!(weekly_avg, Some(60));
+        assert_eq!(last_night, Some(58));
+        assert_eq!(status.as_deref(), Some("BALANCED"));
     }
 
     #[tokio::test]
