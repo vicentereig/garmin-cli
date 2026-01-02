@@ -57,6 +57,30 @@ enum Commands {
         #[command(subcommand)]
         command: SyncCommands,
     },
+    /// Watch and sync data on a schedule
+    Watch {
+        /// Database file path
+        #[arg(long)]
+        db: Option<String>,
+        /// Sync interval (e.g. 30s, 5m, 1h)
+        #[arg(long, default_value = "5m")]
+        interval: String,
+        /// Sync activities only
+        #[arg(long)]
+        activities: bool,
+        /// Sync health data only
+        #[arg(long)]
+        health: bool,
+        /// Sync performance metrics only
+        #[arg(long)]
+        performance: bool,
+        /// Backfill window size in days
+        #[arg(long, default_value = "30")]
+        backfill_window: u32,
+        /// Force re-sync (ignore existing data)
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -339,6 +363,12 @@ enum SyncCommands {
         /// Use simple text output instead of fancy TUI
         #[arg(long)]
         simple: bool,
+        /// Run backfill to sync historical data (instead of latest)
+        #[arg(long)]
+        backfill: bool,
+        /// Force re-sync (ignore existing data)
+        #[arg(long)]
+        force: bool,
     },
     /// Show sync status
     Status {
@@ -479,6 +509,8 @@ async fn main() -> garmin_cli::Result<()> {
                 to,
                 dry_run,
                 simple,
+                backfill,
+                force,
             } => {
                 commands::sync_run(
                     cli.profile,
@@ -490,6 +522,8 @@ async fn main() -> garmin_cli::Result<()> {
                     to,
                     dry_run,
                     simple,
+                    backfill,
+                    force,
                 )
                 .await
             }
@@ -497,6 +531,27 @@ async fn main() -> garmin_cli::Result<()> {
             SyncCommands::Reset { db } => commands::sync_reset(db).await,
             SyncCommands::Clear { db } => commands::sync_clear(db).await,
         },
+        Commands::Watch {
+            db,
+            interval,
+            activities,
+            health,
+            performance,
+            backfill_window,
+            force,
+        } => {
+            commands::watch(
+                cli.profile,
+                db,
+                interval,
+                activities,
+                health,
+                performance,
+                backfill_window,
+                force,
+            )
+            .await
+        }
     };
 
     if let Err(e) = result {

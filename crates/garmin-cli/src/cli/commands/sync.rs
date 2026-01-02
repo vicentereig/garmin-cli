@@ -6,6 +6,7 @@ use crate::client::GarminClient;
 use crate::config::CredentialStore;
 use crate::error::Result;
 use crate::storage::{default_storage_path, Storage, SyncDb};
+use crate::sync::progress::SyncMode;
 use crate::sync::{SyncEngine, SyncOptions, TaskQueue};
 
 use super::auth::refresh_token;
@@ -22,6 +23,8 @@ pub async fn run(
     to: Option<String>,
     dry_run: bool,
     simple: bool,
+    backfill: bool,
+    force: bool,
 ) -> Result<()> {
     let store = CredentialStore::new(profile.clone())?;
     let (oauth1, oauth2) = refresh_token(&store).await?;
@@ -37,6 +40,13 @@ pub async fn run(
 
     let storage = Storage::open(storage_path)?;
 
+    // Determine sync mode
+    let mode = if backfill {
+        SyncMode::Backfill
+    } else {
+        SyncMode::Latest
+    };
+
     // Build sync options
     let sync_all = !activities && !health && !performance;
     let opts = SyncOptions {
@@ -46,13 +56,18 @@ pub async fn run(
         from_date: from.as_ref().and_then(|s| parse_date(s)),
         to_date: to.as_ref().and_then(|s| parse_date(s)),
         dry_run,
-        force: false,
+        force,
         fancy_ui: !simple, // Use fancy TUI unless --simple is specified
         concurrency: 4,
+        mode,
     };
 
     if dry_run {
         println!("Dry run mode - no changes will be made");
+    }
+
+    if backfill && simple {
+        println!("Running backfill sync (historical data)...");
     }
 
     // Create sync engine
@@ -129,7 +144,7 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
 
     // Get pending tasks
     let pending_count = if let Some(pid) = profile_id {
-        sync_db.count_pending_tasks(pid)?
+        sync_db.count_pending_tasks(pid, None)?
     } else {
         0
     };
@@ -167,7 +182,7 @@ pub async fn reset(db_path: Option<String>) -> Result<()> {
     }
 
     let sync_db = SyncDb::open(&sync_db_path)?;
-    let queue = TaskQueue::new(sync_db, 1); // profile_id doesn't matter for reset
+    let queue = TaskQueue::new(sync_db, 1, None); // profile_id doesn't matter for reset
 
     let reset_count = queue.reset_failed()?;
     println!("Reset {} failed tasks to pending", reset_count);
@@ -188,7 +203,7 @@ pub async fn clear(db_path: Option<String>) -> Result<()> {
     }
 
     let sync_db = SyncDb::open(&sync_db_path)?;
-    let queue = TaskQueue::new(sync_db, 1); // profile_id doesn't matter for clear
+    let queue = TaskQueue::new(sync_db, 1, None); // profile_id doesn't matter for clear
 
     let cleared = queue.clear_pending()?;
     println!("Cleared {} pending tasks", cleared);

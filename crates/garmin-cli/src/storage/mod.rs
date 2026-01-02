@@ -107,6 +107,13 @@ impl Storage {
         Ok(Self { parquet, sync_db })
     }
 
+    /// Create a new storage handle that shares the Parquet store but opens a new SyncDb connection.
+    pub fn clone_with_new_db(&self) -> Result<Self> {
+        let parquet = self.parquet.clone();
+        let sync_db = SyncDb::open(self.base_path().join("sync.db"))?;
+        Ok(Self { parquet, sync_db })
+    }
+
     /// Get the base path for external readers
     pub fn base_path(&self) -> &std::path::Path {
         self.parquet.base_path()

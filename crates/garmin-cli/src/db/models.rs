@@ -158,6 +158,29 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
+/// Sync pipeline for task routing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncPipeline {
+    Frontier,
+    Backfill,
+}
+
+impl Default for SyncPipeline {
+    fn default() -> Self {
+        SyncPipeline::Frontier
+    }
+}
+
+impl std::fmt::Display for SyncPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncPipeline::Frontier => write!(f, "frontier"),
+            SyncPipeline::Backfill => write!(f, "backfill"),
+        }
+    }
+}
+
 /// Sync task types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -165,6 +188,10 @@ pub enum SyncTaskType {
     Activities {
         start: u32,
         limit: u32,
+        #[serde(default)]
+        min_date: Option<NaiveDate>,
+        #[serde(default)]
+        max_date: Option<NaiveDate>,
     },
     ActivityDetail {
         activity_id: i64,
@@ -197,6 +224,8 @@ pub struct SyncTask {
     pub id: Option<i64>,
     pub profile_id: i32,
     pub task_type: SyncTaskType,
+    #[serde(default)]
+    pub pipeline: SyncPipeline,
     pub status: TaskStatus,
     pub attempts: i32,
     pub last_error: Option<String>,
@@ -206,11 +235,12 @@ pub struct SyncTask {
 }
 
 impl SyncTask {
-    pub fn new(profile_id: i32, task_type: SyncTaskType) -> Self {
+    pub fn new(profile_id: i32, pipeline: SyncPipeline, task_type: SyncTaskType) -> Self {
         Self {
             id: None,
             profile_id,
             task_type,
+            pipeline,
             status: TaskStatus::Pending,
             attempts: 0,
             last_error: None,

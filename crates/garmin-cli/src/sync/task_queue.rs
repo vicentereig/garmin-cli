@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 #[cfg(test)]
 use crate::db::models::SyncTaskType;
-use crate::db::models::SyncTask;
+use crate::db::models::{SyncPipeline, SyncTask};
 use crate::storage::SyncDb;
 use crate::Result;
 
@@ -17,15 +17,17 @@ use crate::Result;
 pub struct TaskQueue {
     sync_db: SyncDb,
     profile_id: i32,
+    pipeline: Option<SyncPipeline>,
     rr_index: usize,
 }
 
 impl TaskQueue {
     /// Create a new task queue
-    pub fn new(sync_db: SyncDb, profile_id: i32) -> Self {
+    pub fn new(sync_db: SyncDb, profile_id: i32, pipeline: Option<SyncPipeline>) -> Self {
         Self {
             sync_db,
             profile_id,
+            pipeline,
             rr_index: 0,
         }
     }
@@ -37,7 +39,12 @@ impl TaskQueue {
 
     /// Get the next pending task
     pub fn pop(&self) -> Result<Option<SyncTask>> {
-        self.sync_db.pop_task(self.profile_id)
+        self.sync_db.pop_task(self.profile_id, self.pipeline)
+    }
+
+    /// Get the next pending task for a specific pipeline
+    pub fn pop_with_pipeline(&self, pipeline: Option<SyncPipeline>) -> Result<Option<SyncTask>> {
+        self.sync_db.pop_task(self.profile_id, pipeline)
     }
 
     /// Pop the next task using round-robin across primary task types
@@ -54,14 +61,40 @@ impl TaskQueue {
             self.rr_index = self.rr_index.wrapping_add(1);
             if let Some(task) = self
                 .sync_db
-                .pop_task_by_type(self.profile_id, TASK_TYPES[idx])?
+                .pop_task_by_type(self.profile_id, TASK_TYPES[idx], self.pipeline)?
             {
                 return Ok(Some(task));
             }
         }
 
         // Fallback for other task types
-        self.sync_db.pop_task(self.profile_id)
+        self.sync_db.pop_task(self.profile_id, self.pipeline)
+    }
+
+    /// Pop the next task using round-robin across primary task types for a pipeline
+    pub fn pop_round_robin_with_pipeline(
+        &mut self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        const TASK_TYPES: [&str; 4] = [
+            "activities",
+            "download_gpx",
+            "performance",
+            "daily_health",
+        ];
+
+        for _ in 0..TASK_TYPES.len() {
+            let idx = self.rr_index % TASK_TYPES.len();
+            self.rr_index = self.rr_index.wrapping_add(1);
+            if let Some(task) = self
+                .sync_db
+                .pop_task_by_type(self.profile_id, TASK_TYPES[idx], pipeline)?
+            {
+                return Ok(Some(task));
+            }
+        }
+
+        self.sync_db.pop_task(self.profile_id, pipeline)
     }
 
     /// Mark a task as in progress
@@ -86,12 +119,25 @@ impl TaskQueue {
 
     /// Get count of pending tasks
     pub fn pending_count(&self) -> Result<u32> {
-        self.sync_db.count_pending_tasks(self.profile_id)
+        self.sync_db.count_pending_tasks(self.profile_id, self.pipeline)
+    }
+
+    /// Get count of pending tasks for a pipeline
+    pub fn pending_count_with_pipeline(
+        &self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<u32> {
+        self.sync_db.count_pending_tasks(self.profile_id, pipeline)
     }
 
     /// Update the profile scope for queue operations
     pub fn set_profile_id(&mut self, profile_id: i32) {
         self.profile_id = profile_id;
+    }
+
+    /// Update the pipeline scope for queue operations
+    pub fn set_pipeline(&mut self, pipeline: Option<SyncPipeline>) {
+        self.pipeline = pipeline;
     }
 
     /// Get task counts by status
@@ -101,7 +147,7 @@ impl TaskQueue {
 
     /// Get task counts by type (activities, gpx, health, performance)
     pub fn count_by_type(&self) -> Result<(u32, u32, u32, u32)> {
-        self.sync_db.count_tasks_by_type(self.profile_id)
+        self.sync_db.count_tasks_by_type(self.profile_id, self.pipeline)
     }
 
     /// Clear completed tasks older than given days
@@ -150,6 +196,24 @@ impl SharedTaskQueue {
         guard.pop_round_robin()
     }
 
+    /// Get the next pending task for a specific pipeline (thread-safe)
+    pub async fn pop_with_pipeline(
+        &self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let guard = self.inner.lock().await;
+        guard.pop_with_pipeline(pipeline)
+    }
+
+    /// Get the next pending task using round-robin for a pipeline (thread-safe)
+    pub async fn pop_round_robin_with_pipeline(
+        &self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let mut guard = self.inner.lock().await;
+        guard.pop_round_robin_with_pipeline(pipeline)
+    }
+
     /// Add a task to the queue (thread-safe)
     pub async fn push(&self, task: SyncTask) -> Result<i64> {
         let guard = self.inner.lock().await;
@@ -180,10 +244,25 @@ impl SharedTaskQueue {
         guard.pending_count()
     }
 
+    /// Get count of pending tasks for a pipeline (thread-safe)
+    pub async fn pending_count_with_pipeline(
+        &self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<u32> {
+        let guard = self.inner.lock().await;
+        guard.pending_count_with_pipeline(pipeline)
+    }
+
     /// Update the profile scope for queue operations (thread-safe)
     pub async fn set_profile_id(&self, profile_id: i32) {
         let mut guard = self.inner.lock().await;
         guard.set_profile_id(profile_id);
+    }
+
+    /// Update the pipeline scope for queue operations (thread-safe)
+    pub async fn set_pipeline(&self, pipeline: Option<SyncPipeline>) {
+        let mut guard = self.inner.lock().await;
+        guard.set_pipeline(pipeline);
     }
 
     /// Get task counts by status (thread-safe)
@@ -220,7 +299,7 @@ mod tests {
 
     fn setup() -> TaskQueue {
         let sync_db = SyncDb::open_in_memory().unwrap();
-        TaskQueue::new(sync_db, 1)
+        TaskQueue::new(sync_db, 1, None)
     }
 
     #[test]
@@ -229,9 +308,12 @@ mod tests {
 
         let task = SyncTask::new(
             1,
+            SyncPipeline::Frontier,
             SyncTaskType::Activities {
                 start: 0,
                 limit: 50,
+                min_date: None,
+                max_date: None,
             },
         );
         let id = queue.push(task).unwrap();
@@ -249,9 +331,12 @@ mod tests {
 
         let task = SyncTask::new(
             1,
+            SyncPipeline::Frontier,
             SyncTaskType::Activities {
                 start: 0,
                 limit: 50,
+                min_date: None,
+                max_date: None,
             },
         );
         let id = queue.push(task).unwrap();
@@ -273,15 +358,19 @@ mod tests {
         queue
             .push(SyncTask::new(
                 1,
+                SyncPipeline::Frontier,
                 SyncTaskType::Activities {
                     start: 0,
                     limit: 50,
+                    min_date: None,
+                    max_date: None,
                 },
             ))
             .unwrap();
         queue
             .push(SyncTask::new(
                 1,
+                SyncPipeline::Frontier,
                 SyncTaskType::DailyHealth {
                     date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
                 },
@@ -297,9 +386,12 @@ mod tests {
 
         let task = SyncTask::new(
             1,
+            SyncPipeline::Frontier,
             SyncTaskType::Activities {
                 start: 0,
                 limit: 50,
+                min_date: None,
+                max_date: None,
             },
         );
         let id = queue.push(task).unwrap();
@@ -317,11 +409,12 @@ mod tests {
     #[test]
     fn test_profile_id_update_affects_pending_count() {
         let sync_db = SyncDb::open_in_memory().unwrap();
-        let mut queue = TaskQueue::new(sync_db, 1);
+        let mut queue = TaskQueue::new(sync_db, 1, None);
 
         queue
             .push(SyncTask::new(
                 2,
+                SyncPipeline::Frontier,
                 SyncTaskType::DailyHealth {
                     date: NaiveDate::from_ymd_opt(2025, 1, 2).unwrap(),
                 },
@@ -337,11 +430,12 @@ mod tests {
     #[test]
     fn test_pop_round_robin_prefers_activity_first() {
         let sync_db = SyncDb::open_in_memory().unwrap();
-        let mut queue = TaskQueue::new(sync_db, 1);
+        let mut queue = TaskQueue::new(sync_db, 1, None);
 
         queue
             .push(SyncTask::new(
                 1,
+                SyncPipeline::Frontier,
                 SyncTaskType::DailyHealth {
                     date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
                 },
@@ -350,11 +444,47 @@ mod tests {
         queue
             .push(SyncTask::new(
                 1,
-                SyncTaskType::Activities { start: 0, limit: 50 },
+                SyncPipeline::Frontier,
+                SyncTaskType::Activities {
+                    start: 0,
+                    limit: 50,
+                    min_date: None,
+                    max_date: None,
+                },
             ))
             .unwrap();
 
         let first = queue.pop_round_robin().unwrap().unwrap();
         assert!(matches!(first.task_type, SyncTaskType::Activities { .. }));
+    }
+
+    #[test]
+    fn test_pop_with_pipeline_filters() {
+        let sync_db = SyncDb::open_in_memory().unwrap();
+        let queue = TaskQueue::new(sync_db, 1, None);
+
+        let frontier_task = SyncTask::new(
+            1,
+            SyncPipeline::Frontier,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+            },
+        );
+        let backfill_task = SyncTask::new(
+            1,
+            SyncPipeline::Backfill,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2025, 1, 2).unwrap(),
+            },
+        );
+
+        let id_frontier = queue.push(frontier_task).unwrap();
+        let id_backfill = queue.push(backfill_task).unwrap();
+
+        let popped_backfill = queue.pop_with_pipeline(Some(SyncPipeline::Backfill)).unwrap().unwrap();
+        assert_eq!(popped_backfill.id, Some(id_backfill));
+
+        let popped_frontier = queue.pop_with_pipeline(Some(SyncPipeline::Frontier)).unwrap().unwrap();
+        assert_eq!(popped_frontier.id, Some(id_frontier));
     }
 }

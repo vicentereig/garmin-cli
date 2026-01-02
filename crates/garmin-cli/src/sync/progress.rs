@@ -1,14 +1,43 @@
 //! Progress tracking for parallel sync with atomic counters
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Sync mode - latest (recent data) vs backfill (historical)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Sync recent data (since last sync or last 7 days)
+    Latest,
+    /// Backfill historical data
+    Backfill,
+    /// Both latest and backfill in sequence
+    Full,
+}
+
+impl Default for SyncMode {
+    fn default() -> Self {
+        Self::Latest
+    }
+}
+
+impl std::fmt::Display for SyncMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncMode::Latest => write!(f, "Latest"),
+            SyncMode::Backfill => write!(f, "Backfill"),
+            SyncMode::Full => write!(f, "Full"),
+        }
+    }
+}
 
 /// Planning phase steps
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanningStep {
     FetchingProfile,
     FindingOldestActivity,
+    FindingFirstHealth,
+    FindingFirstPerformance,
     PlanningActivities,
     PlanningHealth { days: u32 },
     PlanningPerformance { weeks: u32 },
@@ -38,6 +67,8 @@ pub struct StreamProgress {
     last_item: Mutex<String>,
     /// Current item being processed
     current_item: Mutex<String>,
+    /// Whether this stream's total is discovered dynamically (pagination, etc.)
+    pub is_dynamic: AtomicBool,
 }
 
 impl StreamProgress {
@@ -50,7 +81,18 @@ impl StreamProgress {
             failed: AtomicU32::new(0),
             last_item: Mutex::new(String::new()),
             current_item: Mutex::new(String::new()),
+            is_dynamic: AtomicBool::new(false),
         }
+    }
+
+    /// Mark this stream as having a dynamically discovered total
+    pub fn set_dynamic(&self, dynamic: bool) {
+        self.is_dynamic.store(dynamic, Ordering::Relaxed);
+    }
+
+    /// Check if this stream has a dynamic total
+    pub fn is_dynamic(&self) -> bool {
+        self.is_dynamic.load(Ordering::Relaxed)
     }
 
     /// Set the total count
@@ -149,8 +191,14 @@ pub struct SyncProgress {
     pub start_time: Instant,
     /// User profile name
     pub profile_name: Mutex<String>,
-    /// Date range being synced
+    /// Date range being synced (legacy, kept for compatibility)
     pub date_range: Mutex<String>,
+    /// Current sync mode
+    sync_mode: AtomicU8,
+    /// Latest sync date range (from -> to)
+    pub latest_range: Mutex<Option<(String, String)>>,
+    /// Backfill date range (frontier -> target, syncing backwards)
+    pub backfill_range: Mutex<Option<(String, String)>>,
     /// Request rate history (last 60 seconds)
     pub rate_history: Mutex<Vec<u32>>,
     /// Total requests made
@@ -180,6 +228,9 @@ impl SyncProgress {
             start_time: Instant::now(),
             profile_name: Mutex::new(String::new()),
             date_range: Mutex::new(String::new()),
+            sync_mode: AtomicU8::new(SyncMode::Latest as u8),
+            latest_range: Mutex::new(None),
+            backfill_range: Mutex::new(None),
             rate_history: Mutex::new(vec![0; 60]),
             total_requests: AtomicU32::new(0),
             errors: Mutex::new(Vec::new()),
@@ -252,6 +303,40 @@ impl SyncProgress {
     /// Get date range
     pub fn get_date_range(&self) -> String {
         self.date_range.lock().unwrap().clone()
+    }
+
+    /// Set sync mode
+    pub fn set_sync_mode(&self, mode: SyncMode) {
+        self.sync_mode.store(mode as u8, Ordering::Relaxed);
+    }
+
+    /// Get sync mode
+    pub fn get_sync_mode(&self) -> SyncMode {
+        match self.sync_mode.load(Ordering::Relaxed) {
+            0 => SyncMode::Latest,
+            1 => SyncMode::Backfill,
+            _ => SyncMode::Full,
+        }
+    }
+
+    /// Set latest sync date range
+    pub fn set_latest_range(&self, from: &str, to: &str) {
+        *self.latest_range.lock().unwrap() = Some((from.to_string(), to.to_string()));
+    }
+
+    /// Get latest sync date range
+    pub fn get_latest_range(&self) -> Option<(String, String)> {
+        self.latest_range.lock().unwrap().clone()
+    }
+
+    /// Set backfill date range (frontier -> target, syncing backwards)
+    pub fn set_backfill_range(&self, frontier: &str, target: &str) {
+        *self.backfill_range.lock().unwrap() = Some((frontier.to_string(), target.to_string()));
+    }
+
+    /// Get backfill date range
+    pub fn get_backfill_range(&self) -> Option<(String, String)> {
+        self.backfill_range.lock().unwrap().clone()
     }
 
     /// Set storage path
@@ -435,6 +520,8 @@ impl std::fmt::Display for PlanningStep {
         match self {
             PlanningStep::FetchingProfile => write!(f, "Fetching profile..."),
             PlanningStep::FindingOldestActivity => write!(f, "Finding oldest activity..."),
+            PlanningStep::FindingFirstHealth => write!(f, "Finding first health data..."),
+            PlanningStep::FindingFirstPerformance => write!(f, "Finding first performance data..."),
             PlanningStep::PlanningActivities => write!(f, "Planning activity sync..."),
             PlanningStep::PlanningHealth { days } => write!(f, "Planning health sync ({} days)...", days),
             PlanningStep::PlanningPerformance { weeks } => write!(f, "Planning performance sync ({} weeks)...", weeks),

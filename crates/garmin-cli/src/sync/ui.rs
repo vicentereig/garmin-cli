@@ -139,12 +139,18 @@ impl SyncUI {
         // Build the content lines
         let mut lines = vec![
             Line::from(""),
-            Line::from(Span::styled(
-                "Garmin Sync",
-                Style::default()
-                    .fg(self.theme.title)
-                    .add_modifier(Modifier::BOLD),
-            )),
+            Line::from(vec![
+                Span::styled(
+                    "Garmin Sync",
+                    Style::default()
+                        .fg(self.theme.title)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" v{}", env!("CARGO_PKG_VERSION")),
+                    Style::default().fg(self.theme.dim),
+                ),
+            ]),
             Line::from(""),
         ];
 
@@ -161,6 +167,8 @@ impl SyncUI {
         let steps = [
             (PlanningStep::FetchingProfile, "Fetch profile"),
             (PlanningStep::FindingOldestActivity, "Find oldest activity"),
+            (PlanningStep::FindingFirstHealth, "Find first health data"),
+            (PlanningStep::FindingFirstPerformance, "Find first performance data"),
             (PlanningStep::PlanningActivities, "Plan activity sync"),
             (PlanningStep::PlanningHealth { days: 0 }, "Plan health sync"),
             (PlanningStep::PlanningPerformance { weeks: 0 }, "Plan performance sync"),
@@ -285,10 +293,12 @@ impl SyncUI {
         let order = |s: &PlanningStep| match s {
             PlanningStep::FetchingProfile => 0,
             PlanningStep::FindingOldestActivity => 1,
-            PlanningStep::PlanningActivities => 2,
-            PlanningStep::PlanningHealth { .. } => 3,
-            PlanningStep::PlanningPerformance { .. } => 4,
-            PlanningStep::Complete => 5,
+            PlanningStep::FindingFirstHealth => 2,
+            PlanningStep::FindingFirstPerformance => 3,
+            PlanningStep::PlanningActivities => 4,
+            PlanningStep::PlanningHealth { .. } => 5,
+            PlanningStep::PlanningPerformance { .. } => 6,
+            PlanningStep::Complete => 7,
         };
         order(current) < order(check)
     }
@@ -296,7 +306,10 @@ impl SyncUI {
     /// Draw the header section
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
         let profile = self.progress.get_profile();
-        let date_range = self.progress.get_date_range();
+        let sync_mode = self.progress.get_sync_mode();
+
+        // Build date range display based on sync mode
+        let date_display = self.build_date_display();
 
         let lines = vec![
             Line::from(""),
@@ -307,12 +320,21 @@ impl SyncUI {
                         .fg(self.theme.title)
                         .add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(
+                    format!(" v{}", env!("CARGO_PKG_VERSION")),
+                    Style::default().fg(self.theme.dim),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("[{}]", sync_mode),
+                    Style::default().fg(self.theme.in_progress),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("  Profile: ", Style::default().fg(self.theme.dim)),
                 Span::styled(&profile, Style::default().fg(self.theme.title)),
                 Span::raw("    "),
-                Span::styled(&date_range, Style::default().fg(self.theme.dim)),
+                Span::styled(&date_display, Style::default().fg(self.theme.dim)),
             ]),
         ];
 
@@ -323,6 +345,46 @@ impl SyncUI {
         );
 
         frame.render_widget(header, area);
+    }
+
+    /// Build date display based on sync mode
+    fn build_date_display(&self) -> String {
+        use super::progress::SyncMode;
+
+        let mode = self.progress.get_sync_mode();
+        let latest = self.progress.get_latest_range();
+        let backfill = self.progress.get_backfill_range();
+
+        match mode {
+            SyncMode::Latest => {
+                if let Some((from, to)) = latest {
+                    format!("{} → {}", from, to)
+                } else {
+                    self.progress.get_date_range()
+                }
+            }
+            SyncMode::Backfill => {
+                if let Some((frontier, target)) = backfill {
+                    format!("{} ← {}", target, frontier)
+                } else {
+                    self.progress.get_date_range()
+                }
+            }
+            SyncMode::Full => {
+                let mut parts = Vec::new();
+                if let Some((from, to)) = latest {
+                    parts.push(format!("Latest: {} → {}", from, to));
+                }
+                if let Some((frontier, target)) = backfill {
+                    parts.push(format!("Backfill: {} ← {}", target, frontier));
+                }
+                if parts.is_empty() {
+                    self.progress.get_date_range()
+                } else {
+                    parts.join("  |  ")
+                }
+            }
+        }
     }
 
     /// Draw the tasks section with checklist style
@@ -380,8 +442,12 @@ impl SyncUI {
         ];
 
         if total > 0 {
-            // Add count
-            let count_str = format!("{:>4}/{:<4}", completed, total);
+            // For dynamic streams (pagination, discovery), don't show misleading total
+            let count_str = if stream.is_dynamic() && !stream.is_complete() {
+                format!("{:>4} synced", completed)
+            } else {
+                format!("{:>4}/{:<4}", completed, total)
+            };
             spans.push(Span::styled(count_str, Style::default().fg(self.theme.dim)));
 
             // Add failed count if any
@@ -392,8 +458,8 @@ impl SyncUI {
                 ));
             }
 
-            // Add progress bar if in progress
-            if !stream.is_complete() && total > 0 {
+            // Add progress bar if in progress (skip for dynamic streams since % is meaningless)
+            if !stream.is_complete() && total > 0 && !stream.is_dynamic() {
                 spans.push(Span::raw("  "));
                 spans.extend(self.progress_bar(percent, 20));
                 spans.push(Span::styled(
