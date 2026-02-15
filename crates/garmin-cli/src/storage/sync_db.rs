@@ -169,6 +169,27 @@ impl SyncDb {
             .map_err(|e| GarminError::Database(format!("Failed to get profile: {}", e)))
     }
 
+    /// Get the most recently synced profile, falling back to most recently created.
+    ///
+    /// Returns (profile_id, display_name) if at least one profile exists.
+    pub fn get_latest_profile(&self) -> Result<Option<(i32, String)>> {
+        self.conn
+            .query_row(
+                "SELECT profile_id, display_name
+                 FROM profiles
+                 ORDER BY
+                     CASE WHEN last_sync_at IS NULL THEN 1 ELSE 0 END,
+                     last_sync_at DESC,
+                     created_at DESC,
+                     profile_id DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| GarminError::Database(format!("Failed to get latest profile: {}", e)))
+    }
+
     /// Update profile's last sync time
     pub fn update_profile_sync_time(&self, profile_id: i32) -> Result<()> {
         self.conn

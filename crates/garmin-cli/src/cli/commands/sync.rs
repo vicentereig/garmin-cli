@@ -110,9 +110,35 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
 
     let sync_db = SyncDb::open(&sync_db_path)?;
 
-    // Get profile info
-    let profile_name = profile.as_deref().unwrap_or("default");
-    let profile_id = sync_db.get_profile_id(profile_name)?;
+    // Resolve profile for status reporting.
+    // CLI profile names are credential profiles and may not match Garmin display_name in sync.db.
+    let requested_profile = profile.as_deref();
+    let mut profile_note: Option<String> = None;
+    let (profile_name, profile_id) = match requested_profile {
+        Some(name) => match sync_db.get_profile_id(name)? {
+            Some(id) => (name.to_string(), Some(id)),
+            None => match sync_db.get_latest_profile()? {
+                Some((id, resolved_name)) => {
+                    profile_note = Some(format!(
+                        "Requested profile '{}' not found in sync database; showing latest synced profile '{}'.",
+                        name, resolved_name
+                    ));
+                    (resolved_name, Some(id))
+                }
+                None => {
+                    profile_note = Some(format!(
+                        "Requested profile '{}' not found in sync database.",
+                        name
+                    ));
+                    (name.to_string(), None)
+                }
+            },
+        },
+        None => match sync_db.get_latest_profile()? {
+            Some((id, resolved_name)) => (resolved_name, Some(id)),
+            None => ("default".to_string(), None),
+        },
+    };
 
     // Count Parquet files
     let activities_path = storage_path.join("activities");
@@ -151,6 +177,9 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
 
     println!("Storage: {}", storage_path.display());
     println!("Profile: {}", profile_name);
+    if let Some(note) = profile_note {
+        println!("Note: {}", note);
+    }
     println!();
     println!("Parquet files:");
     println!("  Activity partitions:    {:>4}", activity_files);
