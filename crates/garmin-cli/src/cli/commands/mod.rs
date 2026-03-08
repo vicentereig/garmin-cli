@@ -4,7 +4,6 @@ pub mod devices;
 pub mod health;
 pub mod profile;
 pub mod sync;
-pub mod watch;
 pub mod weight;
 
 pub use activities::{
@@ -22,5 +21,4 @@ pub use health::{
 };
 pub use profile::{settings as show_settings, show as show_profile};
 pub use sync::{clear as sync_clear, reset as sync_reset, run as sync_run, status as sync_status};
-pub use watch::watch;
 pub use weight::{add as add_weight, latest as latest_weight, list as list_weight};

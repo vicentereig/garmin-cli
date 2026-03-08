@@ -35,10 +35,6 @@ dirs.workspace = true
 tabled.workspace = true
 comfy-table.workspace = true
 
-# TUI
-ratatui.workspace = true
-crossterm.workspace = true
-
 # Utilities
 thiserror.workspace = true
 chrono.workspace = true

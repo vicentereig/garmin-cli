@@ -70,7 +70,7 @@ garmin health calories --days 7
 # Weight
 garmin health weight
 garmin health weight --from 2025-01-01 --to 2025-12-31
-garmin health weight-add --weight 80.2 --unit kg
+garmin health weight-add 80.2 --unit kg
 
 # VO2 Max
 garmin health vo2max
@@ -119,15 +119,13 @@ garmin health insights --days 28
 # List activities
 garmin activities list
 garmin activities list --limit 20
-garmin activities list --type running
-garmin activities list --from 2025-12-01 --to 2025-12-31
 
 # Get activity details
 garmin activities get 21247810009
 
 # Download activity (FIT, GPX, TCX)
-garmin activities download 21247810009 --format fit --output activity.fit
-garmin activities download 21247810009 --format gpx --output activity.gpx
+garmin activities download 21247810009 --type fit --output activity.fit
+garmin activities download 21247810009 --type gpx --output activity.gpx
 
 # Upload activity
 garmin activities upload activity.fit
@@ -158,7 +156,7 @@ garmin profile settings
 
 ## Sync Commands
 
-Sync your Garmin data to local Parquet files for offline analysis. The sync uses a parallel producer/consumer pipeline with 3 concurrent workers for fast data fetching.
+Sync your Garmin data to local Parquet files for offline analysis. Sync runs use line-oriented terminal progress and a final summary.
 
 ```bash
 # Sync all data (activities, health, performance)
@@ -179,9 +177,6 @@ garmin sync run --performance
 
 # Dry run (preview what will be synced)
 garmin sync run --dry-run
-
-# Use simple text output instead of TUI
-garmin sync run --simple
 
 # Check sync status
 garmin sync status
@@ -218,11 +213,11 @@ Data is stored in time-partitioned Parquet files for efficient querying:
 
 ### Parallel Sync Pipeline
 
-The sync uses a producer/consumer architecture for ~3x faster syncing:
+The sync uses a producer/consumer architecture with 4 concurrent workers:
 
-- **3 Producers**: Fetch data from Garmin API (rate-limited)
+- **4 Producers**: Fetch data from Garmin API (rate-limited)
 - **Bounded channel**: Backpressure with 100-item buffer
-- **3 Consumers**: Write to Parquet with partition-level locks
+- **4 Consumers**: Write to Parquet with partition-level locks
 - **Crash recovery**: SQLite task queue persists progress
 
 Different partitions can be written in parallel; writes to the same partition are serialized to prevent data loss.
@@ -236,7 +231,7 @@ Query your synced Parquet files directly using DuckDB:
 brew install duckdb  # macOS
 # or download from https://duckdb.org
 
-# Set your data path (shown in TUI during sync)
+# Set your data path
 # macOS: ~/Library/Application Support/garmin
 # Linux: ~/.local/share/garmin
 export GARMIN_DATA=~/Library/Application\ Support/garmin
@@ -268,19 +263,6 @@ SELECT date, training_status, training_readiness, vo2max
 FROM '~/Library/Application Support/garmin/performance_metrics/*.parquet'
 WHERE date >= '2025-12-01'
 ORDER BY date DESC;
-```
-
-## Output Formats
-
-```bash
-# Table (default)
-garmin health summary
-
-# JSON
-garmin health summary --format json
-
-# CSV
-garmin health summary --format csv
 ```
 
 ## Multiple Profiles

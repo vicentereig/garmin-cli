@@ -263,7 +263,7 @@ impl SyncProgress {
         self.is_planning.load(Ordering::Relaxed)
     }
 
-    /// Request that the TUI shuts down
+    /// Request that progress reporting shuts down
     pub fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
     }
@@ -486,7 +486,7 @@ impl SyncProgress {
             && (self.performance.get_total() == 0 || self.performance.is_complete())
     }
 
-    /// Print simple status line (for --simple mode)
+    /// Print a status line for terminal progress reporting.
     pub fn print_simple_status(&self) {
         let act = &self.activities;
         let gpx = &self.gpx;

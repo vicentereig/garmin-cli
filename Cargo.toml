@@ -33,10 +33,6 @@ dirs = "5"
 tabled = "0.16"
 comfy-table = "7"
 
-# TUI
-ratatui = "0.29"
-crossterm = "0.28"
-
 # Utilities
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }

@@ -1,6 +1,7 @@
 //! Sync commands for garmin-cli
 
 use chrono::NaiveDate;
+use std::path::Path;
 
 use crate::client::GarminClient;
 use crate::config::CredentialStore;
@@ -22,7 +23,6 @@ pub async fn run(
     from: Option<String>,
     to: Option<String>,
     dry_run: bool,
-    simple: bool,
     backfill: bool,
     force: bool,
 ) -> Result<()> {
@@ -33,10 +33,6 @@ pub async fn run(
     let storage_path = db_path
         .map(std::path::PathBuf::from)
         .unwrap_or_else(default_storage_path);
-
-    if simple {
-        println!("Using storage: {}", storage_path.display());
-    }
 
     let storage = Storage::open(storage_path)?;
 
@@ -57,34 +53,14 @@ pub async fn run(
         to_date: to.as_ref().and_then(|s| parse_date(s)),
         dry_run,
         force,
-        fancy_ui: !simple, // Use fancy TUI unless --simple is specified
         concurrency: 4,
         mode,
     };
 
-    if dry_run {
-        println!("Dry run mode - no changes will be made");
-    }
-
-    if backfill && simple {
-        println!("Running backfill sync (historical data)...");
-    }
-
     // Create sync engine
     let client = GarminClient::new(&oauth1.domain);
     let mut engine = SyncEngine::with_storage(storage, client, oauth2)?;
-
-    if !simple {
-        // TUI mode - less initial output
-        let stats = engine.run(opts).await?;
-        // Stats printed by TUI
-        let _ = stats; // Suppress unused warning
-    } else {
-        // Simple mode - traditional output
-        println!("Starting sync...");
-        let stats = engine.run(opts).await?;
-        println!("\nSync complete: {}", stats);
-    }
+    engine.run(opts).await?;
 
     Ok(())
 }
@@ -97,14 +73,14 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
 
     if !storage_path.exists() {
         println!("No storage found at: {}", storage_path.display());
-        println!("Run 'garmin sync' to create one.");
+        println!("Run 'garmin sync run' to create one.");
         return Ok(());
     }
 
     let sync_db_path = storage_path.join("sync.db");
     if !sync_db_path.exists() {
         println!("No sync database found at: {}", sync_db_path.display());
-        println!("Run 'garmin sync' to create one.");
+        println!("Run 'garmin sync run' to create one.");
         return Ok(());
     }
 
@@ -141,32 +117,10 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
     };
 
     // Count Parquet files
-    let activities_path = storage_path.join("activities");
-    let activity_files = if activities_path.exists() {
-        std::fs::read_dir(&activities_path)
-            .map(|rd| rd.filter(|e| e.is_ok()).count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-
-    let health_path = storage_path.join("daily_health");
-    let health_files = if health_path.exists() {
-        std::fs::read_dir(&health_path)
-            .map(|rd| rd.filter(|e| e.is_ok()).count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
-
-    let track_points_path = storage_path.join("track_points");
-    let track_files = if track_points_path.exists() {
-        std::fs::read_dir(&track_points_path)
-            .map(|rd| rd.filter(|e| e.is_ok()).count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let activity_files = count_partition_files(&storage_path, "activities");
+    let health_files = count_partition_files(&storage_path, "daily_health");
+    let performance_files = count_partition_files(&storage_path, "performance_metrics");
+    let track_files = count_partition_files(&storage_path, "track_points");
 
     // Get pending tasks
     let pending_count = if let Some(pid) = profile_id {
@@ -184,6 +138,7 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
     println!("Parquet files:");
     println!("  Activity partitions:    {:>4}", activity_files);
     println!("  Health partitions:      {:>4}", health_files);
+    println!("  Performance partitions: {:>4}", performance_files);
     println!("  Track point partitions: {:>4}", track_files);
     println!();
     if pending_count > 0 {
@@ -196,6 +151,17 @@ pub async fn status(profile: Option<String>, db_path: Option<String>) -> Result<
 /// Parse date string to NaiveDate
 fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+}
+
+fn count_partition_files(storage_path: &Path, dirname: &str) -> usize {
+    let partition_path = storage_path.join(dirname);
+    if !partition_path.exists() {
+        return 0;
+    }
+
+    std::fs::read_dir(&partition_path)
+        .map(|entries| entries.filter(|entry| entry.is_ok()).count())
+        .unwrap_or(0)
 }
 
 /// Reset failed tasks to pending
@@ -238,4 +204,26 @@ pub async fn clear(db_path: Option<String>) -> Result<()> {
     println!("Cleared {} pending tasks", cleared);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_partition_files_returns_zero_for_missing_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        assert_eq!(count_partition_files(temp_dir.path(), "activities"), 0);
+    }
+
+    #[test]
+    fn count_partition_files_counts_existing_entries() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let activities_dir = temp_dir.path().join("activities");
+        std::fs::create_dir(&activities_dir).unwrap();
+        std::fs::write(activities_dir.join("2026-W10.parquet"), b"test").unwrap();
+        std::fs::write(activities_dir.join("2026-W11.parquet"), b"test").unwrap();
+
+        assert_eq!(count_partition_files(temp_dir.path(), "activities"), 2);
+    }
 }

@@ -8,21 +8,9 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Output format
-    #[arg(short, long, global = true, default_value = "table")]
-    format: OutputFormat,
-
     /// Profile to use
     #[arg(short, long, global = true, env = "GARMIN_PROFILE")]
     profile: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
-enum OutputFormat {
-    #[default]
-    Table,
-    Json,
-    Csv,
 }
 
 #[derive(Subcommand)]
@@ -56,30 +44,6 @@ enum Commands {
     Sync {
         #[command(subcommand)]
         command: SyncCommands,
-    },
-    /// Watch and sync data on a schedule
-    Watch {
-        /// Database file path
-        #[arg(long)]
-        db: Option<String>,
-        /// Sync interval (e.g. 30s, 5m, 1h)
-        #[arg(long, default_value = "5m")]
-        interval: String,
-        /// Sync activities only
-        #[arg(long)]
-        activities: bool,
-        /// Sync health data only
-        #[arg(long)]
-        health: bool,
-        /// Sync performance metrics only
-        #[arg(long)]
-        performance: bool,
-        /// Backfill window size in days
-        #[arg(long, default_value = "30")]
-        backfill_window: u32,
-        /// Force re-sync (ignore existing data)
-        #[arg(long)]
-        force: bool,
     },
 }
 
@@ -360,9 +324,6 @@ enum SyncCommands {
         /// Dry run (plan only, don't execute)
         #[arg(long)]
         dry_run: bool,
-        /// Use simple text output instead of fancy TUI
-        #[arg(long)]
-        simple: bool,
         /// Run backfill to sync historical data (instead of latest)
         #[arg(long)]
         backfill: bool,
@@ -508,7 +469,6 @@ async fn main() -> garmin_cli::Result<()> {
                 from,
                 to,
                 dry_run,
-                simple,
                 backfill,
                 force,
             } => {
@@ -521,7 +481,6 @@ async fn main() -> garmin_cli::Result<()> {
                     from,
                     to,
                     dry_run,
-                    simple,
                     backfill,
                     force,
                 )
@@ -531,27 +490,6 @@ async fn main() -> garmin_cli::Result<()> {
             SyncCommands::Reset { db } => commands::sync_reset(db).await,
             SyncCommands::Clear { db } => commands::sync_clear(db).await,
         },
-        Commands::Watch {
-            db,
-            interval,
-            activities,
-            health,
-            performance,
-            backfill_window,
-            force,
-        } => {
-            commands::watch(
-                cli.profile,
-                db,
-                interval,
-                activities,
-                health,
-                performance,
-                backfill_window,
-                force,
-            )
-            .await
-        }
     };
 
     if let Err(e) = result {
@@ -560,4 +498,24 @@ async fn main() -> garmin_cli::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_removed_format_flag() {
+        assert!(Cli::try_parse_from(["garmin", "--format", "json", "auth", "status"]).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_watch_command() {
+        assert!(Cli::try_parse_from(["garmin", "watch"]).is_err());
+    }
+
+    #[test]
+    fn rejects_removed_simple_flag() {
+        assert!(Cli::try_parse_from(["garmin", "sync", "run", "--simple"]).is_err());
+    }
 }

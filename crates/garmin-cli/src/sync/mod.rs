@@ -7,12 +7,11 @@
 //! - GPX parsing for track points
 //! - Parquet storage for concurrent read access
 //! - Producer/consumer pipeline for concurrent fetching and writing
-//! - Fancy TUI or simple progress output
+//! - Plain terminal progress output
 
 pub mod progress;
 pub mod rate_limiter;
 pub mod task_queue;
-pub mod ui;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,27 +37,6 @@ fn pipeline_filter(mode: progress::SyncMode) -> Option<SyncPipeline> {
         progress::SyncMode::Backfill => Some(SyncPipeline::Backfill),
         progress::SyncMode::Full => None,
     }
-}
-
-pub(crate) fn compute_backfill_window(
-    frontier: NaiveDate,
-    target: NaiveDate,
-    window_days: u32,
-) -> Option<(NaiveDate, NaiveDate, NaiveDate, bool)> {
-    if window_days == 0 || frontier < target {
-        return None;
-    }
-
-    let window_days = window_days as i64;
-    let mut from = frontier - Duration::days(window_days.saturating_sub(1));
-    if from < target {
-        from = target;
-    }
-    let to = frontier;
-    let next_frontier = from - Duration::days(1);
-    let is_complete = from <= target;
-
-    Some((from, to, next_frontier, is_complete))
 }
 
 /// Data produced by API fetchers, consumed by Parquet writers
@@ -129,10 +107,6 @@ impl SyncEngine {
         })
     }
 
-    pub(crate) fn set_queue_pipeline(&mut self, pipeline: Option<SyncPipeline>) {
-        self.queue.set_pipeline(pipeline);
-    }
-
     /// Fetch and cache the user's display name
     async fn get_display_name(&mut self) -> Result<String> {
         if let Some(ref name) = self.display_name {
@@ -156,26 +130,6 @@ impl SyncEngine {
 
         self.display_name = Some(name.clone());
         Ok(name)
-    }
-
-    pub(crate) async fn ensure_display_name(&mut self) -> Result<String> {
-        self.get_display_name().await
-    }
-
-    pub(crate) fn pending_count(&self) -> Result<u32> {
-        self.queue.pending_count()
-    }
-
-    pub(crate) fn profile_id(&self) -> i32 {
-        self.profile_id
-    }
-
-    pub(crate) fn storage_base_path(&self) -> &std::path::Path {
-        self.storage.base_path()
-    }
-
-    pub(crate) fn recover_in_progress(&self) -> Result<u32> {
-        self.queue.recover_in_progress()
     }
 
     /// Find the oldest activity date and total count by querying the activities API
@@ -400,33 +354,18 @@ impl SyncEngine {
 
     /// Run the sync process
     pub async fn run(&mut self, opts: SyncOptions) -> Result<SyncStats> {
-        // For now, always use sequential mode as parallel requires more refactoring
-        // The TUI will be integrated in a future update
-        if opts.fancy_ui {
-            self.run_with_progress(&opts).await
-        } else {
-            self.run_sequential(&opts).await
-        }
+        self.run_with_progress(&opts).await
     }
 
-    /// Run sync with fancy progress tracking (TUI or simple)
+    /// Run sync with plain terminal progress reporting.
     async fn run_with_progress(&mut self, opts: &SyncOptions) -> Result<SyncStats> {
         let progress = Arc::new(SyncProgress::new());
 
         // Set storage path and sync mode for display
         progress.set_storage_path(&self.storage.base_path().display().to_string());
         progress.set_sync_mode(opts.mode);
-
-        // Spawn TUI immediately (before planning)
-        let ui_progress = progress.clone();
-        let ui_handle = tokio::spawn(async move {
-            if let Err(e) = ui::run_tui(ui_progress).await {
-                eprintln!("TUI error: {}", e);
-            }
-        });
-
-        // Give TUI time to initialize
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        println!("Using storage: {}", progress.get_storage_path());
+        println!("Planning sync...");
 
         // Planning phase - updates progress instead of printing
         progress.set_planning_step(PlanningStep::FetchingProfile);
@@ -482,17 +421,26 @@ impl SyncEngine {
             }
         }
 
+        print_sync_overview(&progress);
+        println!("Planning complete.");
+
         let stats_result = if opts.dry_run {
+            println!("Dry run mode - no changes will be made");
             Ok(SyncStats::default())
         } else {
-            self.run_with_progress_tracking(opts, progress.clone()).await
+            let reporter_progress = progress.clone();
+            let reporter_handle = tokio::spawn(async move {
+                run_progress_reporter(reporter_progress).await;
+            });
+
+            let result = self.run_with_progress_tracking(opts, progress.clone()).await;
+            progress.request_shutdown();
+            let _ = reporter_handle.await;
+            result
         };
 
-        // Signal TUI to exit and wait for cleanup
-        progress.request_shutdown();
-        let _ = ui_handle.await;
-
         let stats = stats_result?;
+        print_sync_errors(&progress);
 
         // Update sync state after successful completion
         if !opts.dry_run && stats.completed > 0 {
@@ -707,96 +655,6 @@ impl SyncEngine {
         })
     }
 
-    /// Run sync sequentially (original behavior, simple output)
-    async fn run_sequential(&mut self, opts: &SyncOptions) -> Result<SyncStats> {
-        let mut stats = SyncStats::default();
-
-        // Fetch display name early (needed for health endpoints)
-        print!("Fetching user profile...");
-        let _ = io::stdout().flush();
-        let display_name = self.get_display_name().await?;
-        println!(" {}", display_name);
-        self.queue.set_pipeline(pipeline_filter(opts.mode));
-
-        // Recover any crashed tasks
-        let recovered = self.queue.recover_in_progress()?;
-        if recovered > 0 {
-            println!("  Recovered {} tasks from previous run", recovered);
-            stats.recovered = recovered;
-        }
-
-        // Plan phase: generate tasks if queue is empty
-        if self.queue.pending_count()? == 0 {
-            println!("Planning sync tasks...");
-            self.plan_sync(opts).await?;
-        }
-
-        let total_tasks = self.queue.pending_count()?;
-        println!("  {} tasks queued\n", total_tasks);
-
-        if opts.dry_run {
-            println!("Dry run mode - tasks planned but not executed");
-            return Ok(stats);
-        }
-
-        // Execute phase: process tasks
-        while let Some(task) = self.queue.pop()? {
-            if self.rate_limiter.should_pause() {
-                println!(
-                    "  Rate limited, pausing for {} seconds...",
-                    self.rate_limiter.pause_duration().as_secs()
-                );
-                tokio::time::sleep(self.rate_limiter.pause_duration()).await;
-            }
-
-            let task_id = task.id.unwrap();
-            self.queue.mark_in_progress(task_id)?;
-
-            // Print task description
-            print_task_status(&task, &stats);
-
-            self.rate_limiter.wait().await;
-
-            match self.execute_task(&task).await {
-                Ok(()) => {
-                    self.queue.mark_completed(task_id)?;
-                    self.rate_limiter.on_success();
-                    stats.completed += 1;
-                    println!(" done");
-                }
-                Err(GarminError::RateLimited) => {
-                    self.rate_limiter.on_rate_limit();
-                    let backoff = self.rate_limiter.current_backoff();
-                    self.queue.mark_failed(
-                        task_id,
-                        "Rate limited",
-                        Duration::from_std(backoff).unwrap_or(Duration::seconds(60)),
-                    )?;
-                    stats.rate_limited += 1;
-                    println!(" rate limited (retry in {}s)", backoff.as_secs());
-                }
-                Err(e) => {
-                    let backoff = Duration::seconds(60);
-                    self.queue.mark_failed(task_id, &e.to_string(), backoff)?;
-                    stats.failed += 1;
-                    println!(" failed: {}", e);
-                }
-            }
-
-            if opts.dry_run {
-                break;
-            }
-        }
-
-        // Cleanup old completed tasks
-        self.queue.cleanup(7)?;
-
-        // Update profile sync time
-        self.storage.sync_db.update_profile_sync_time(self.profile_id)?;
-
-        Ok(stats)
-    }
-
     /// Count pending tasks by type and update progress
     ///
     /// Sets initial totals based on actual tasks in queue.
@@ -822,212 +680,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Plan sync tasks based on current state (simple/non-TUI mode)
-    async fn plan_sync(&mut self, opts: &SyncOptions) -> Result<()> {
-        let today = Utc::now().date_naive();
-
-        match opts.mode {
-            progress::SyncMode::Latest => {
-                println!("  Mode: Latest (syncing recent data)");
-                let last_sync = self.storage.sync_db.get_sync_state(self.profile_id, "activities")?;
-                let from_date = opts.from_date.unwrap_or_else(|| {
-                    last_sync
-                        .and_then(|s| s.last_sync_date)
-                        .unwrap_or_else(|| today - Duration::days(7))
-                });
-                let to_date = opts.to_date.unwrap_or(today);
-                self.plan_sync_for_range(opts, from_date, to_date, SyncPipeline::Frontier)
-                    .await
-            }
-            progress::SyncMode::Backfill => {
-                println!("  Mode: Backfill (syncing historical data)");
-                let (oldest_date, total_activities, _) = self.find_oldest_activity_date(None).await?;
-
-                // Get or initialize backfill frontier
-                let backfill_state = self.storage.sync_db.get_backfill_state(self.profile_id, "activities")?;
-                let (frontier_date, activities_complete) = match backfill_state {
-                    Some((frontier, _target, complete)) => (frontier, complete),
-                    None => {
-                        let last_sync = self.storage.sync_db.get_sync_state(self.profile_id, "activities")?;
-                        let frontier = last_sync.and_then(|s| s.last_sync_date).unwrap_or(today);
-                        self.storage.sync_db.set_backfill_state(
-                            self.profile_id, "activities", frontier, oldest_date, false
-                        )?;
-                        (frontier, false)
-                    }
-                };
-
-                println!(
-                    "  Backfill range: {} to {} ({} activities total)",
-                    oldest_date, frontier_date, total_activities
-                );
-
-                let activity_from = opts.from_date.unwrap_or(oldest_date);
-                let activity_to = opts.to_date.unwrap_or(frontier_date);
-
-                println!(
-                    "  Date range: {} to {} ({} days)",
-                    activity_from,
-                    activity_to,
-                    (activity_to - activity_from).num_days()
-                );
-
-                if opts.sync_activities && !activities_complete {
-                    println!("  Planning activity sync...");
-                    self.plan_activities_sync(
-                        SyncPipeline::Backfill,
-                        Some(activity_from),
-                        Some(activity_to),
-                    )?;
-                }
-
-                if opts.sync_health {
-                    let health_state = self
-                        .storage
-                        .sync_db
-                        .get_backfill_state(self.profile_id, "health")?;
-
-                    let health_target = match health_state {
-                        Some((_frontier, target, complete)) => (!complete).then_some(target),
-                        None => {
-                            let first_health = self
-                                .find_first_health_date(None, activity_from, activity_to)
-                                .await?;
-                            match first_health {
-                                Some(first) => {
-                                    self.storage.sync_db.set_backfill_state(
-                                        self.profile_id,
-                                        "health",
-                                        frontier_date,
-                                        first,
-                                        false,
-                                    )?;
-                                    Some(first)
-                                }
-                                None => {
-                                    self.storage.sync_db.set_backfill_state(
-                                        self.profile_id,
-                                        "health",
-                                        frontier_date,
-                                        frontier_date,
-                                        true,
-                                    )?;
-                                    None
-                                }
-                            }
-                        }
-                    };
-
-                    if let Some(target) = health_target {
-                        let health_from = std::cmp::max(activity_from, target);
-                        let health_to = activity_to;
-                        if health_from <= health_to {
-                            let health_tasks = self.plan_health_sync(
-                                health_from,
-                                health_to,
-                                opts.force,
-                                SyncPipeline::Backfill,
-                            )?;
-                            println!("  Planning health sync: {} days to fetch", health_tasks);
-                        }
-                    }
-                }
-
-                if opts.sync_performance {
-                    let perf_state = self
-                        .storage
-                        .sync_db
-                        .get_backfill_state(self.profile_id, "performance")?;
-
-                    let perf_target = match perf_state {
-                        Some((_frontier, target, complete)) => (!complete).then_some(target),
-                        None => {
-                            let first_perf = self
-                                .find_first_performance_date(None, activity_from, activity_to)
-                                .await?;
-                            match first_perf {
-                                Some(first) => {
-                                    self.storage.sync_db.set_backfill_state(
-                                        self.profile_id,
-                                        "performance",
-                                        frontier_date,
-                                        first,
-                                        false,
-                                    )?;
-                                    Some(first)
-                                }
-                                None => {
-                                    self.storage.sync_db.set_backfill_state(
-                                        self.profile_id,
-                                        "performance",
-                                        frontier_date,
-                                        frontier_date,
-                                        true,
-                                    )?;
-                                    None
-                                }
-                            }
-                        }
-                    };
-
-                    if let Some(target) = perf_target {
-                        let perf_from = std::cmp::max(activity_from, target);
-                        let perf_to = activity_to;
-                        if perf_from <= perf_to {
-                            let perf_tasks = self.plan_performance_sync(
-                                perf_from,
-                                perf_to,
-                                opts.force,
-                                SyncPipeline::Backfill,
-                            )?;
-                            println!("  Planning performance sync: {} weeks to fetch", perf_tasks);
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-            progress::SyncMode::Full => {
-                println!("  Mode: Full (latest + backfill)");
-                // For simple mode, just do a full range sync
-                let (from_date, _total, _) = self.find_oldest_activity_date(None).await?;
-                let to_date = opts.to_date.unwrap_or(today);
-                self.plan_sync_for_range(opts, from_date, to_date, SyncPipeline::Backfill)
-                    .await
-            }
-        }
-    }
-
-    /// Plan sync for a specific date range
-    async fn plan_sync_for_range(
-        &mut self,
-        opts: &SyncOptions,
-        from_date: NaiveDate,
-        to_date: NaiveDate,
-        pipeline: SyncPipeline,
-    ) -> Result<()> {
-        let total_days = (to_date - from_date).num_days();
-        println!("  Date range: {} to {} ({} days)", from_date, to_date, total_days);
-
-        if opts.sync_activities {
-            println!("  Planning activity sync...");
-            self.plan_activities_sync(pipeline, Some(from_date), Some(to_date))?;
-        }
-
-        if opts.sync_health {
-            let health_tasks = self.plan_health_sync(from_date, to_date, opts.force, pipeline)?;
-            println!("  Planning health sync: {} days to fetch", health_tasks);
-        }
-
-        if opts.sync_performance {
-            let perf_tasks = self.plan_performance_sync(from_date, to_date, opts.force, pipeline)?;
-            println!("  Planning performance sync: {} weeks to fetch", perf_tasks);
-        }
-
-        Ok(())
-    }
-
-    /// Plan sync tasks with progress tracking (for TUI mode)
+    /// Plan sync tasks with progress tracking.
     async fn plan_sync_with_progress(&mut self, opts: &SyncOptions, progress: &SyncProgress) -> Result<()> {
         let today = Utc::now().date_naive();
 
@@ -1329,473 +982,52 @@ impl SyncEngine {
         Ok(count)
     }
 
-    /// Execute a single sync task
-    async fn execute_task(&mut self, task: &SyncTask) -> Result<()> {
-        match &task.task_type {
-            SyncTaskType::Activities {
-                start,
-                limit,
-                min_date,
-                max_date,
-            } => {
-                self.sync_activities(*start, *limit, task.pipeline, *min_date, *max_date)
-                    .await
-            }
-            SyncTaskType::ActivityDetail { activity_id } => {
-                self.sync_activity_detail(*activity_id).await
-            }
-            SyncTaskType::DownloadGpx { activity_id, activity_date, .. } => {
-                self.download_gpx(*activity_id, activity_date.as_deref()).await
-            }
-            SyncTaskType::DailyHealth { date } => self.sync_daily_health(*date).await,
-            SyncTaskType::Performance { date } => {
-                self.sync_performance(*date, task.pipeline).await
-            }
-            SyncTaskType::Weight { from, to } => self.sync_weight(*from, *to).await,
-            SyncTaskType::GenerateEmbeddings { activity_ids } => {
-                self.generate_embeddings(activity_ids).await
-            }
-        }
+}
+
+fn print_sync_overview(progress: &SyncProgress) {
+    println!("Profile: {}", progress.get_profile());
+    println!("Mode: {}", progress.get_sync_mode());
+    println!("Range: {}", progress.get_date_range());
+    println!(
+        "Queued tasks: activities {}, gpx {}, health {}, performance {}",
+        progress.activities.get_total(),
+        progress.gpx.get_total(),
+        progress.health.get_total(),
+        progress.performance.get_total()
+    );
+}
+
+fn print_sync_errors(progress: &SyncProgress) {
+    let errors = progress.get_errors();
+    if errors.is_empty() {
+        return;
     }
 
-    /// Sync activities list
-    async fn sync_activities(
-        &mut self,
-        start: u32,
-        limit: u32,
-        pipeline: SyncPipeline,
-        min_date: Option<NaiveDate>,
-        max_date: Option<NaiveDate>,
-    ) -> Result<()> {
-        let path = format!(
-            "/activitylist-service/activities/search/activities?limit={}&start={}",
-            limit, start
-        );
-        let activities: Vec<serde_json::Value> = self.client.get_json(&self.token, &path).await?;
+    println!("\nRecent errors:");
+    for error in errors.iter().take(5) {
+        println!("  [{}] {}: {}", error.stream, error.item, error.error);
+    }
 
-        let mut parsed_activities = Vec::new();
-        let mut reached_min = false;
+    if errors.len() > 5 {
+        println!("  ... and {} more", errors.len() - 5);
+    }
+}
 
-        for activity in &activities {
-            let activity_date = activity
-                .get("startTimeLocal")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.split(' ').next())
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+async fn run_progress_reporter(progress: SharedProgress) {
+    loop {
+        progress.print_simple_status();
 
-            if let Some(date) = activity_date {
-                if let Some(min) = min_date {
-                    if date < min {
-                        reached_min = true;
-                        break;
-                    }
-                }
-
-                if let Some(max) = max_date {
-                    if date > max {
-                        continue;
-                    }
-                }
-            }
-
-            // Parse activity
-            let parsed = self.parse_activity(activity)?;
-            parsed_activities.push(parsed);
-
-            // Queue GPX download for activities with GPS
-            if activity
-                .get("hasPolyline")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                if let Some(id) = activity.get("activityId").and_then(|v| v.as_i64()) {
-                    let activity_name = activity
-                        .get("activityName")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let activity_date = activity
-                        .get("startTimeLocal")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.split(' ').next())
-                        .map(|s| s.to_string());
-
-                    if let Some(ref date_str) = activity_date {
-                        if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                            if self.storage.parquet.has_track_points(id, date)? {
-                                continue;
-                            }
-                        }
-                    }
-
-                    let task = SyncTask::new(
-                        self.profile_id,
-                        pipeline,
-                        SyncTaskType::DownloadGpx {
-                            activity_id: id,
-                            activity_name,
-                            activity_date,
-                        },
-                    );
-                    self.queue.push(task)?;
-                }
-            }
+        if progress.should_shutdown() || progress.is_complete() {
+            println!();
+            break;
         }
 
-        // Store activities in Parquet
-        if !parsed_activities.is_empty() {
-            self.storage.parquet.upsert_activities(&parsed_activities)?;
-        }
-
-        // If we got a full page, there might be more
-        if activities.len() == limit as usize && !reached_min {
-            let task = SyncTask::new(
-                self.profile_id,
-                pipeline,
-                SyncTaskType::Activities {
-                    start: start + limit,
-                    limit,
-                    min_date,
-                    max_date,
-                },
-            );
-            self.queue.push(task)?;
-        }
-
-        Ok(())
-    }
-
-    /// Parse activity JSON into Activity struct
-    fn parse_activity(&self, activity: &serde_json::Value) -> Result<Activity> {
-        let activity_id = activity
-            .get("activityId")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| GarminError::invalid_response("Missing activityId"))?;
-
-        let start_time_local = activity
-            .get("startTimeLocal")
-            .and_then(|v| v.as_str())
-            .and_then(parse_garmin_datetime);
-
-        let start_time_gmt = activity
-            .get("startTimeGMT")
-            .and_then(|v| v.as_str())
-            .and_then(parse_garmin_datetime);
-
-        Ok(Activity {
-            activity_id,
-            profile_id: self.profile_id,
-            activity_name: activity.get("activityName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            activity_type: activity.get("activityType").and_then(|v| v.get("typeKey")).and_then(|v| v.as_str()).map(|s| s.to_string()),
-            start_time_local,
-            start_time_gmt,
-            duration_sec: activity.get("duration").and_then(|v| v.as_f64()),
-            distance_m: activity.get("distance").and_then(|v| v.as_f64()),
-            calories: activity.get("calories").and_then(|v| v.as_i64()).map(|v| v as i32),
-            avg_hr: activity.get("averageHR").and_then(|v| v.as_i64()).map(|v| v as i32),
-            max_hr: activity.get("maxHR").and_then(|v| v.as_i64()).map(|v| v as i32),
-            avg_speed: activity.get("averageSpeed").and_then(|v| v.as_f64()),
-            max_speed: activity.get("maxSpeed").and_then(|v| v.as_f64()),
-            elevation_gain: activity.get("elevationGain").and_then(|v| v.as_f64()),
-            elevation_loss: activity.get("elevationLoss").and_then(|v| v.as_f64()),
-            avg_cadence: activity.get("averageRunningCadenceInStepsPerMinute").and_then(|v| v.as_f64()),
-            avg_power: activity.get("avgPower").and_then(|v| v.as_i64()).map(|v| v as i32),
-            normalized_power: activity.get("normPower").and_then(|v| v.as_i64()).map(|v| v as i32),
-            training_effect: activity.get("aerobicTrainingEffect").and_then(|v| v.as_f64()),
-            training_load: activity.get("activityTrainingLoad").and_then(|v| v.as_f64()),
-            start_lat: activity.get("startLatitude").and_then(|v| v.as_f64()),
-            start_lon: activity.get("startLongitude").and_then(|v| v.as_f64()),
-            end_lat: activity.get("endLatitude").and_then(|v| v.as_f64()),
-            end_lon: activity.get("endLongitude").and_then(|v| v.as_f64()),
-            ground_contact_time: activity.get("avgGroundContactTime").and_then(|v| v.as_f64()),
-            vertical_oscillation: activity.get("avgVerticalOscillation").and_then(|v| v.as_f64()),
-            stride_length: activity.get("avgStrideLength").and_then(|v| v.as_f64()),
-            location_name: activity.get("locationName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            raw_json: Some(activity.clone()),
-        })
-    }
-
-    /// Sync activity detail (not implemented yet)
-    async fn sync_activity_detail(&mut self, _activity_id: i64) -> Result<()> {
-        // TODO: Fetch detailed activity data
-        Ok(())
-    }
-
-    /// Download and parse GPX
-    async fn download_gpx(&mut self, activity_id: i64, activity_date: Option<&str>) -> Result<()> {
-        let path = format!("/download-service/export/gpx/activity/{}", activity_id);
-        let gpx_bytes = self.client.download(&self.token, &path).await?;
-        let gpx_data = String::from_utf8_lossy(&gpx_bytes);
-
-        // Parse activity date for partitioning
-        let date = activity_date
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            .unwrap_or_else(|| Utc::now().date_naive());
-
-        self.parse_and_store_gpx(activity_id, date, &gpx_data)?;
-        Ok(())
-    }
-
-    /// Parse GPX and store track points
-    fn parse_and_store_gpx(&self, activity_id: i64, activity_date: NaiveDate, gpx_data: &str) -> Result<()> {
-        use gpx::read;
-        use std::io::BufReader;
-
-        let reader = BufReader::new(gpx_data.as_bytes());
-        let gpx = read(reader).map_err(|e| GarminError::invalid_response(e.to_string()))?;
-
-        let mut points = Vec::new();
-
-        for track in gpx.tracks {
-            for segment in track.segments {
-                for point in segment.points {
-                    let timestamp = point
-                        .time
-                        .map(|t| {
-                            DateTime::parse_from_rfc3339(&t.format().unwrap_or_default())
-                                .map(|dt| dt.with_timezone(&Utc))
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default();
-
-                    points.push(TrackPoint {
-                        id: None,
-                        activity_id,
-                        timestamp,
-                        lat: Some(point.point().y()),
-                        lon: Some(point.point().x()),
-                        elevation: point.elevation,
-                        heart_rate: None,  // GPX doesn't include HR
-                        cadence: None,
-                        power: None,
-                        speed: None,
-                    });
-                }
-            }
-        }
-
-        // Write track points to Parquet
-        if !points.is_empty() {
-            self.storage.parquet.write_track_points(activity_date, &points)?;
-        }
-
-        Ok(())
-    }
-
-    /// Sync daily health data
-    async fn sync_daily_health(&mut self, date: NaiveDate) -> Result<()> {
-        // Get user's display name for the endpoint
-        let display_name = self.get_display_name().await?;
-
-        let path = format!(
-            "/usersummary-service/usersummary/daily/{}?calendarDate={}",
-            display_name, date
-        );
-
-        // Try to fetch health data - may return 404/error for dates without data
-        let health_result: std::result::Result<serde_json::Value, _> =
-            self.client.get_json(&self.token, &path).await;
-
-        let health = match health_result {
-            Ok(data) => data,
-            Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => {
-                // No data for this date - store empty record to mark as synced
-                serde_json::json!({})
-            }
-            Err(e) => return Err(e),
-        };
-
-        let sleep_path = format!(
-            "/wellness-service/wellness/dailySleepData/{}?date={}",
-            display_name, date
-        );
-        let sleep_data: Option<serde_json::Value> = match self.client.get_json(&self.token, &sleep_path).await
-        {
-            Ok(data) => Some(data),
-            Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-            Err(e) => return Err(e),
-        };
-
-        let hrv_path = format!("/hrv-service/hrv/{}", date);
-        let hrv_data: Option<serde_json::Value> = match self.client.get_json(&self.token, &hrv_path).await
-        {
-            Ok(data) => Some(data),
-            Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-            Err(e) => return Err(e),
-        };
-
-        let (sleep_total, deep_sleep, light_sleep, rem_sleep, sleep_score) =
-            parse_sleep_metrics(sleep_data.as_ref());
-        let (hrv_weekly_avg, hrv_last_night, hrv_status) = parse_hrv_metrics(hrv_data.as_ref());
-
-        let record = DailyHealth {
-            id: None,
-            profile_id: self.profile_id,
-            date,
-            steps: health.get("totalSteps").and_then(|v| v.as_i64()).map(|v| v as i32),
-            step_goal: health.get("dailyStepGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
-            total_calories: health.get("totalKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
-            active_calories: health.get("activeKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
-            bmr_calories: health.get("bmrKilocalories").and_then(|v| v.as_i64()).map(|v| v as i32),
-            resting_hr: health.get("restingHeartRate").and_then(|v| v.as_i64()).map(|v| v as i32),
-            sleep_seconds: sleep_total
-                .or_else(|| {
-                    health
-                        .get("sleepingSeconds")
-                        .and_then(|v| v.as_i64())
-                        .map(|v| v as i32)
-                }),
-            deep_sleep_seconds: deep_sleep,
-            light_sleep_seconds: light_sleep,
-            rem_sleep_seconds: rem_sleep,
-            sleep_score,
-            avg_stress: health.get("averageStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
-            max_stress: health.get("maxStressLevel").and_then(|v| v.as_i64()).map(|v| v as i32),
-            body_battery_start: health.get("bodyBatteryChargedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
-            body_battery_end: health.get("bodyBatteryDrainedValue").and_then(|v| v.as_i64()).map(|v| v as i32),
-            hrv_weekly_avg,
-            hrv_last_night,
-            hrv_status,
-            avg_respiration: health.get("averageRespirationValue").and_then(|v| v.as_f64()),
-            avg_spo2: health.get("averageSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
-            lowest_spo2: health.get("lowestSpo2Value").and_then(|v| v.as_i64()).map(|v| v as i32),
-            hydration_ml: health.get("hydrationIntakeGoal").and_then(|v| v.as_i64()).map(|v| v as i32),
-            moderate_intensity_min: health.get("moderateIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
-            vigorous_intensity_min: health.get("vigorousIntensityMinutes").and_then(|v| v.as_i64()).map(|v| v as i32),
-            raw_json: Some(health),
-        };
-
-        self.storage.parquet.upsert_daily_health(&[record])?;
-
-        Ok(())
-    }
-
-    /// Sync performance metrics
-    async fn sync_performance(
-        &mut self,
-        date: NaiveDate,
-        _pipeline: SyncPipeline,
-    ) -> Result<()> {
-        let display_name = self.get_display_name().await?;
-
-        let vo2_path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
-        let vo2max: Option<serde_json::Value> = match self.client.get_json(&self.token, &vo2_path).await
-        {
-            Ok(data) => Some(data),
-            Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-            Err(e) => return Err(e),
-        };
-
-        let race_path = format!(
-            "/metrics-service/metrics/racepredictions/daily/{}?fromCalendarDate={}&toCalendarDate={}",
-            display_name, date, date
-        );
-        let race_predictions: Option<serde_json::Value> =
-            match self.client.get_json(&self.token, &race_path).await {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
-
-        // Fetch training readiness
-        let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
-        let training_readiness: Option<serde_json::Value> = self
-            .client
-            .get_json(&self.token, &readiness_path)
-            .await
-            .ok();
-
-        // Fetch training status (includes load data)
-        let status_path = format!(
-            "/metrics-service/metrics/trainingstatus/aggregated/{}",
-            date
-        );
-        let training_status: Option<serde_json::Value> =
-            self.client.get_json(&self.token, &status_path).await.ok();
-
-        let endurance_path = format!("/metrics-service/metrics/endurancescore?calendarDate={}", date);
-        let endurance_score_data: Option<serde_json::Value> =
-            match self.client.get_json(&self.token, &endurance_path).await {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
-
-        let hill_path = format!("/metrics-service/metrics/hillscore?calendarDate={}", date);
-        let hill_score_data: Option<serde_json::Value> =
-            match self.client.get_json(&self.token, &hill_path).await {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
-
-        let fitness_age_path = format!("/fitnessage-service/fitnessage/{}", date);
-        let fitness_age_data: Option<serde_json::Value> =
-            match self.client.get_json(&self.token, &fitness_age_path).await {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
-
-        let vo2max_value = parse_vo2max_value(vo2max.as_ref());
-        let fitness_age =
-            parse_fitness_age(fitness_age_data.as_ref()).or_else(|| parse_vo2max_fitness_age(vo2max.as_ref()));
-
-        // Extract training readiness
-        let readiness_entry = training_readiness
-            .as_ref()
-            .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first());
-
-        let readiness_score = readiness_entry
-            .and_then(|e| e.get("score"))
-            .and_then(|v| v.as_i64())
-            .map(|v| v as i32);
-
-        let training_status_str = parse_training_status(training_status.as_ref(), date);
-        let (race_5k, race_10k, race_half, race_marathon) =
-            parse_race_predictions(race_predictions.as_ref());
-        let endurance_score = parse_overall_score(endurance_score_data.as_ref());
-        let hill_score = parse_overall_score(hill_score_data.as_ref());
-
-        let record = PerformanceMetrics {
-            id: None,
-            profile_id: self.profile_id,
-            date,
-            vo2max: vo2max_value,
-            fitness_age,
-            training_readiness: readiness_score,
-            training_status: training_status_str,
-            lactate_threshold_hr: None,
-            lactate_threshold_pace: None,
-            race_5k_sec: race_5k,
-            race_10k_sec: race_10k,
-            race_half_sec: race_half,
-            race_marathon_sec: race_marathon,
-            endurance_score,
-            hill_score,
-            raw_json: None,
-        };
-
-        self.storage.parquet.upsert_performance_metrics(&[record])?;
-
-        Ok(())
-    }
-
-    /// Sync weight data
-    async fn sync_weight(&mut self, _from: NaiveDate, _to: NaiveDate) -> Result<()> {
-        // TODO: Implement weight sync
-        Ok(())
-    }
-
-    /// Generate embeddings for activities
-    async fn generate_embeddings(&mut self, _activity_ids: &[i64]) -> Result<()> {
-        // TODO: Implement embedding generation using fastembed
-        Ok(())
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
 /// Options for sync operation
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct SyncOptions {
     /// Sync activities
     pub sync_activities: bool,
@@ -1811,36 +1043,24 @@ pub struct SyncOptions {
     pub dry_run: bool,
     /// Force re-sync (ignore existing data)
     pub force: bool,
-    /// Use fancy TUI (default: true, set false for --simple)
-    pub fancy_ui: bool,
-    /// Number of concurrent API requests (default: 3)
+    /// Number of concurrent API requests (default: 4)
     pub concurrency: usize,
     /// Sync mode (Latest, Backfill, or Full)
     pub mode: progress::SyncMode,
 }
 
-impl SyncOptions {
-    /// Create options for full sync
-    pub fn full() -> Self {
+impl Default for SyncOptions {
+    fn default() -> Self {
         Self {
-            sync_activities: true,
-            sync_health: true,
-            sync_performance: true,
-            fancy_ui: true,
+            sync_activities: false,
+            sync_health: false,
+            sync_performance: false,
+            from_date: None,
+            to_date: None,
+            dry_run: false,
+            force: false,
             concurrency: 4,
-            ..Default::default()
-        }
-    }
-
-    /// Create options for simple (non-TUI) mode
-    pub fn simple() -> Self {
-        Self {
-            sync_activities: true,
-            sync_health: true,
-            sync_performance: true,
-            fancy_ui: false,
-            concurrency: 4,
-            ..Default::default()
+            mode: progress::SyncMode::Latest,
         }
     }
 }
@@ -1870,49 +1090,6 @@ impl std::fmt::Display for SyncStats {
         }
         Ok(())
     }
-}
-
-/// Print task status with nice formatting
-fn print_task_status(task: &SyncTask, stats: &SyncStats) {
-    let desc = match &task.task_type {
-        SyncTaskType::Activities { start, limit, .. } => {
-            format!("Fetching activities {}-{}", start, start + limit)
-        }
-        SyncTaskType::ActivityDetail { activity_id } => {
-            format!("Activity {} details", activity_id)
-        }
-        SyncTaskType::DownloadGpx {
-            activity_id,
-            activity_name,
-            activity_date,
-        } => {
-            let name = activity_name.as_deref().unwrap_or("Unknown");
-            let date = activity_date.as_deref().unwrap_or("");
-            if date.is_empty() {
-                format!("GPX: {} ({})", name, activity_id)
-            } else {
-                format!("GPX: {} {} ({})", date, name, activity_id)
-            }
-        }
-        SyncTaskType::DailyHealth { date } => {
-            format!("Health data for {}", date)
-        }
-        SyncTaskType::Performance { date } => {
-            format!("Performance metrics for {}", date)
-        }
-        SyncTaskType::Weight { from, to } => {
-            format!("Weight {} to {}", from, to)
-        }
-        SyncTaskType::GenerateEmbeddings { activity_ids } => {
-            format!(
-                "Generating embeddings for {} activities",
-                activity_ids.len()
-            )
-        }
-    };
-
-    print!("[{:>4}] {}...", stats.completed + 1, desc);
-    let _ = io::stdout().flush();
 }
 
 /// Update progress when starting a task
@@ -3340,40 +2517,6 @@ mod tests {
             }
             _ => panic!("unexpected data type"),
         }
-    }
-
-    #[test]
-    fn test_compute_backfill_window_within_bounds() {
-        let frontier = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
-        let target = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-        let (from, to, next_frontier, complete) =
-            compute_backfill_window(frontier, target, 10).unwrap();
-
-        assert_eq!(to, frontier);
-        assert_eq!(from, NaiveDate::from_ymd_opt(2025, 1, 22).unwrap());
-        assert_eq!(next_frontier, NaiveDate::from_ymd_opt(2025, 1, 21).unwrap());
-        assert!(!complete);
-    }
-
-    #[test]
-    fn test_compute_backfill_window_hits_target() {
-        let frontier = NaiveDate::from_ymd_opt(2025, 1, 31).unwrap();
-        let target = NaiveDate::from_ymd_opt(2025, 1, 25).unwrap();
-        let (from, to, next_frontier, complete) =
-            compute_backfill_window(frontier, target, 10).unwrap();
-
-        assert_eq!(to, frontier);
-        assert_eq!(from, target);
-        assert_eq!(next_frontier, NaiveDate::from_ymd_opt(2025, 1, 24).unwrap());
-        assert!(complete);
-    }
-
-    #[test]
-    fn test_compute_backfill_window_complete_or_invalid() {
-        let frontier = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
-        let target = NaiveDate::from_ymd_opt(2025, 1, 2).unwrap();
-        assert!(compute_backfill_window(frontier, target, 5).is_none());
-        assert!(compute_backfill_window(target, frontier, 0).is_none());
     }
 
     #[test]
