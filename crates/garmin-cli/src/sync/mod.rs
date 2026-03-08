@@ -76,6 +76,29 @@ pub struct SyncEngine {
     display_name: Option<String>,
 }
 
+#[derive(Clone)]
+struct ProducerContext {
+    rate_limiter: SharedRateLimiter,
+    client: GarminClient,
+    token: OAuth2Token,
+    progress: SharedProgress,
+    display_name: Arc<String>,
+    profile_id: i32,
+    stats: Arc<TokioMutex<SyncStats>>,
+    in_flight: Arc<AtomicUsize>,
+    parquet: Arc<ParquetStore>,
+    force: bool,
+    pipeline_filter: Option<SyncPipeline>,
+}
+
+type SleepMetrics = (
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
+    Option<i32>,
+);
+
 impl SyncEngine {
     /// Create a new sync engine with default storage location
     pub fn new(client: GarminClient, token: OAuth2Token) -> Result<Self> {
@@ -556,35 +579,22 @@ impl SyncEngine {
         for id in 0..opts.concurrency {
             let tx = tx.clone();
             let queue = queue.clone();
-            let rate_limiter = rate_limiter.clone();
-            let client = client.clone();
-            let token = token.clone();
-            let progress = progress.clone();
-            let display_name = Arc::clone(&display_name);
-            let stats = Arc::clone(&stats);
-            let in_flight = Arc::clone(&in_flight);
-            let parquet = Arc::clone(&parquet);
-            let force = opts.force;
-            let pipeline_filter = pipeline_filter;
+            let context = ProducerContext {
+                rate_limiter: rate_limiter.clone(),
+                client: client.clone(),
+                token: token.clone(),
+                progress: progress.clone(),
+                display_name: Arc::clone(&display_name),
+                profile_id,
+                stats: Arc::clone(&stats),
+                in_flight: Arc::clone(&in_flight),
+                parquet: Arc::clone(&parquet),
+                force: opts.force,
+                pipeline_filter,
+            };
 
             producer_handles.push(tokio::spawn(async move {
-                producer_loop(
-                    id,
-                    queue,
-                    rate_limiter,
-                    client,
-                    token,
-                    tx,
-                    progress,
-                    display_name,
-                    profile_id,
-                    stats,
-                    in_flight,
-                    parquet,
-                    force,
-                    pipeline_filter,
-                )
-                .await
+                producer_loop(id, queue, tx, context).await
             }));
         }
         drop(tx); // Close sender so consumers know when done
@@ -1245,24 +1255,14 @@ fn record_write_failure(data: &SyncData, progress: &SyncProgress, error: &str) {
 async fn producer_loop(
     _id: usize,
     queue: SharedTaskQueue,
-    rate_limiter: SharedRateLimiter,
-    client: GarminClient,
-    token: OAuth2Token,
     tx: mpsc::Sender<SyncData>,
-    progress: SharedProgress,
-    display_name: Arc<String>,
-    profile_id: i32,
-    stats: Arc<TokioMutex<SyncStats>>,
-    in_flight: Arc<AtomicUsize>,
-    parquet: Arc<ParquetStore>,
-    force: bool,
-    pipeline_filter: Option<SyncPipeline>,
+    context: ProducerContext,
 ) {
     let mut empty_count = 0;
 
     loop {
         // Pop next task
-        let next_task = match pipeline_filter {
+        let next_task = match context.pipeline_filter {
             Some(pipeline) => queue.pop_round_robin_with_pipeline(Some(pipeline)).await,
             None => queue.pop_round_robin().await,
         };
@@ -1276,7 +1276,7 @@ async fn producer_loop(
                 // Queue is empty, but consumers might be adding new tasks
                 // Wait a bit and retry before giving up
                 empty_count += 1;
-                if should_exit_when_idle(empty_count, in_flight.load(Ordering::Relaxed)) {
+                if should_exit_when_idle(empty_count, context.in_flight.load(Ordering::Relaxed)) {
                     break; // No more tasks after multiple retries
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1289,7 +1289,7 @@ async fn producer_loop(
         };
 
         let task_id = task.id.unwrap();
-        in_flight.fetch_add(1, Ordering::Relaxed);
+        context.in_flight.fetch_add(1, Ordering::Relaxed);
 
         // Mark in progress
         if let Err(e) = queue.mark_in_progress(task_id).await {
@@ -1298,16 +1298,18 @@ async fn producer_loop(
         }
 
         // Update progress display
-        update_progress_for_task(&task, &progress);
+        update_progress_for_task(&task, &context.progress);
 
         // Skip tasks that already exist unless forcing
-        if !force {
+        if !context.force {
             let should_skip = match &task.task_type {
-                SyncTaskType::DailyHealth { date } => {
-                    parquet.has_daily_health(profile_id, *date).unwrap_or(false)
-                }
-                SyncTaskType::Performance { date } => parquet
-                    .has_performance_metrics(profile_id, *date)
+                SyncTaskType::DailyHealth { date } => context
+                    .parquet
+                    .has_daily_health(context.profile_id, *date)
+                    .unwrap_or(false),
+                SyncTaskType::Performance { date } => context
+                    .parquet
+                    .has_performance_metrics(context.profile_id, *date)
                     .unwrap_or(false),
                 SyncTaskType::DownloadGpx {
                     activity_id,
@@ -1316,7 +1318,7 @@ async fn producer_loop(
                 } => activity_date
                     .as_ref()
                     .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                    .and_then(|date| parquet.has_track_points(*activity_id, date).ok())
+                    .and_then(|date| context.parquet.has_track_points(*activity_id, date).ok())
                     .unwrap_or(false),
                 _ => false,
             };
@@ -1325,30 +1327,37 @@ async fn producer_loop(
                 if let Err(e) = queue.mark_completed(task_id).await {
                     eprintln!("Failed to mark task completed: {}", e);
                 }
-                complete_progress_for_task(&task, &progress);
+                complete_progress_for_task(&task, &context.progress);
                 {
-                    let mut s = stats.lock().await;
+                    let mut s = context.stats.lock().await;
                     s.completed += 1;
                 }
-                in_flight.fetch_sub(1, Ordering::Relaxed);
+                context.in_flight.fetch_sub(1, Ordering::Relaxed);
                 continue;
             }
         }
 
         // Acquire rate limiter permit
-        let _permit = rate_limiter.acquire().await;
-        progress.record_request();
+        let _permit = context.rate_limiter.acquire().await;
+        context.progress.record_request();
 
         // Fetch data based on task type
-        let result = fetch_task_data(&task, &client, &token, &display_name, profile_id).await;
+        let result = fetch_task_data(
+            &task,
+            &context.client,
+            &context.token,
+            &context.display_name,
+            context.profile_id,
+        )
+        .await;
 
         match result {
             Ok(data) => {
-                rate_limiter.on_success();
+                context.rate_limiter.on_success();
                 // Send to consumer
                 if tx.send(data).await.is_err() {
                     // Channel closed, consumer is done
-                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    context.in_flight.fetch_sub(1, Ordering::Relaxed);
                     let backoff = Duration::seconds(60);
                     let _ = queue
                         .mark_failed(task_id, "Consumer channel closed", backoff)
@@ -1357,17 +1366,17 @@ async fn producer_loop(
                 }
             }
             Err(GarminError::RateLimited) => {
-                rate_limiter.on_rate_limit();
+                context.rate_limiter.on_rate_limit();
                 let backoff = Duration::seconds(60);
                 if let Err(e) = queue.mark_failed(task_id, "Rate limited", backoff).await {
                     eprintln!("Failed to mark task as rate limited: {}", e);
                 }
-                fail_progress_for_task(&task, &progress, "Rate limited");
+                fail_progress_for_task(&task, &context.progress, "Rate limited");
                 {
-                    let mut s = stats.lock().await;
+                    let mut s = context.stats.lock().await;
                     s.rate_limited += 1;
                 }
-                in_flight.fetch_sub(1, Ordering::Relaxed);
+                context.in_flight.fetch_sub(1, Ordering::Relaxed);
             }
             Err(e) => {
                 let backoff = Duration::seconds(60);
@@ -1375,12 +1384,12 @@ async fn producer_loop(
                 if let Err(e) = queue.mark_failed(task_id, &error_msg, backoff).await {
                     eprintln!("Failed to mark task as failed: {}", e);
                 }
-                fail_progress_for_task(&task, &progress, &error_msg);
+                fail_progress_for_task(&task, &context.progress, &error_msg);
                 {
-                    let mut s = stats.lock().await;
+                    let mut s = context.stats.lock().await;
                     s.failed += 1;
                 }
-                in_flight.fetch_sub(1, Ordering::Relaxed);
+                context.in_flight.fetch_sub(1, Ordering::Relaxed);
             }
         }
     }
@@ -1401,15 +1410,7 @@ fn first_entry(value: &serde_json::Value) -> Option<&serde_json::Value> {
     }
 }
 
-fn parse_sleep_metrics(
-    value: Option<&serde_json::Value>,
-) -> (
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-) {
+fn parse_sleep_metrics(value: Option<&serde_json::Value>) -> SleepMetrics {
     let dto = value.and_then(|v| v.get("dailySleepDTO")).or(value);
 
     let dto = match dto {
@@ -2122,13 +2123,15 @@ async fn consumer_loop(
             }
 
             SyncData::Health { record, task_id } => {
-                let result = parquet.upsert_daily_health_async(&[record.clone()]).await;
+                let result = parquet
+                    .upsert_daily_health_async(std::slice::from_ref(record))
+                    .await;
                 (result, *task_id, "Health")
             }
 
             SyncData::Performance { record, task_id } => {
                 let result = parquet
-                    .upsert_performance_metrics_async(&[record.clone()])
+                    .upsert_performance_metrics_async(std::slice::from_ref(record))
                     .await;
                 (result, *task_id, "Performance")
             }

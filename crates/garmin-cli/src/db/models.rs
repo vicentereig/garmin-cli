@@ -159,17 +159,12 @@ impl std::fmt::Display for TaskStatus {
 }
 
 /// Sync pipeline for task routing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncPipeline {
+    #[default]
     Frontier,
     Backfill,
-}
-
-impl Default for SyncPipeline {
-    fn default() -> Self {
-        SyncPipeline::Frontier
-    }
 }
 
 impl std::fmt::Display for SyncPipeline {

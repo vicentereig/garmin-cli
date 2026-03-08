@@ -5,18 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Sync mode - latest (recent data) vs backfill (historical)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SyncMode {
     /// Sync recent data (since last sync or last 7 days)
+    #[default]
     Latest,
     /// Backfill historical data
     Backfill,
-}
-
-impl Default for SyncMode {
-    fn default() -> Self {
-        Self::Latest
-    }
 }
 
 impl std::fmt::Display for SyncMode {
