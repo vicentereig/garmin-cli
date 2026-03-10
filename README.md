@@ -7,7 +7,13 @@ Garmin Connect CLI built with Rust.
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap vicentereig/tap
+brew install vicentereig/garmin-cli/garmin
+```
+
+Or tap first, then install:
+
+```bash
+brew tap vicentereig/garmin-cli
 brew install garmin
 ```
 

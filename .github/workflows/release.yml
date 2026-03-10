@@ -13,12 +13,17 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
 jobs:
   tests:
     name: Run tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Cargo test
         run: cargo test --locked
@@ -37,6 +42,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -80,6 +87,8 @@ jobs:
             use_cross: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -115,8 +124,11 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     needs: tests
+    if: ${{ github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish
         run: cargo publish --locked -p garmin-cli
@@ -160,6 +172,10 @@ jobs:
     name: Update Homebrew formula
     runs-on: ubuntu-latest
     needs: release
+    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    env:
+      HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'vicentereig/homebrew-garmin-cli' }}
+      HOMEBREW_FORMULA_NAME: garmin
     steps:
       - name: Resolve tag
         id: tag
@@ -172,35 +188,93 @@ jobs:
       - name: Checkout tap repository
         uses: actions/checkout@v4
         with:
-          repository: vicentereig/homebrew-tap
+          repository: ${{ env.HOMEBREW_TAP_REPOSITORY }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
       - name: Update formula
         run: |
+          set -euo pipefail
           TAG="${{ steps.tag.outputs.value }}"
           VERSION="${TAG#v}"
           BASE_URL="https://github.com/vicentereig/garmin-cli/releases/download/${TAG}"
-          FORMULA="homebrew-tap/Formula/garmin.rb"
+          FORMULA_DIR="homebrew-tap/Formula"
+          FORMULA="${FORMULA_DIR}/${HOMEBREW_FORMULA_NAME}.rb"
+          CHECKSUMS=$(curl -fsSL "${BASE_URL}/checksums.txt")
 
-          # Download SHA256 values from release
-          DARWIN_AMD64=$(curl -sL "${BASE_URL}/garmin-darwin-amd64.tar.gz.sha256" | awk '{print $1}')
-          DARWIN_ARM64=$(curl -sL "${BASE_URL}/garmin-darwin-arm64.tar.gz.sha256" | awk '{print $1}')
-          LINUX_AMD64=$(curl -sL "${BASE_URL}/garmin-linux-amd64.tar.gz.sha256" | awk '{print $1}')
-          LINUX_ARM64=$(curl -sL "${BASE_URL}/garmin-linux-arm64.tar.gz.sha256" | awk '{print $1}')
+          DARWIN_AMD64=$(echo "$CHECKSUMS" | awk '/garmin-darwin-amd64\.tar\.gz$/ {print $1}')
+          DARWIN_ARM64=$(echo "$CHECKSUMS" | awk '/garmin-darwin-arm64\.tar\.gz$/ {print $1}')
+          LINUX_AMD64=$(echo "$CHECKSUMS" | awk '/garmin-linux-amd64\.tar\.gz$/ {print $1}')
+          LINUX_ARM64=$(echo "$CHECKSUMS" | awk '/garmin-linux-arm64\.tar\.gz$/ {print $1}')
 
-          # Update version
-          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
+          for checksum in \
+            "$DARWIN_AMD64" \
+            "$DARWIN_ARM64" \
+            "$LINUX_AMD64" \
+            "$LINUX_ARM64"
+          do
+            if [ -z "$checksum" ]; then
+              echo "Missing checksum in checksums.txt"
+              exit 1
+            fi
+          done
 
-          # Update SHA256 values
-          sed -i "/darwin-amd64/,/sha256/{s/sha256 \"[^\"]*\"/sha256 \"${DARWIN_AMD64}\"/}" "$FORMULA"
-          sed -i "/darwin-arm64/,/sha256/{s/sha256 \"[^\"]*\"/sha256 \"${DARWIN_ARM64}\"/}" "$FORMULA"
-          sed -i "/linux-amd64/,/sha256/{s/sha256 \"[^\"]*\"/sha256 \"${LINUX_AMD64}\"/}" "$FORMULA"
-          sed -i "/linux-arm64/,/sha256/{s/sha256 \"[^\"]*\"/sha256 \"${LINUX_ARM64}\"/}" "$FORMULA"
+          mkdir -p "$FORMULA_DIR"
+          cat > "$FORMULA" <<EOF
+          class Garmin < Formula
+            desc "CLI for Garmin Connect API - activities, health metrics, and more"
+            homepage "https://github.com/vicentereig/garmin-cli"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_intel do
+                url "${BASE_URL}/garmin-darwin-amd64.tar.gz"
+                sha256 "${DARWIN_AMD64}"
+              end
+              on_arm do
+                url "${BASE_URL}/garmin-darwin-arm64.tar.gz"
+                sha256 "${DARWIN_ARM64}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "${BASE_URL}/garmin-linux-amd64.tar.gz"
+                sha256 "${LINUX_AMD64}"
+              end
+              on_arm do
+                url "${BASE_URL}/garmin-linux-arm64.tar.gz"
+                sha256 "${LINUX_ARM64}"
+              end
+            end
+
+            def install
+              if OS.mac?
+                if Hardware::CPU.intel?
+                  bin.install "garmin-darwin-amd64" => "garmin"
+                else
+                  bin.install "garmin-darwin-arm64" => "garmin"
+                end
+              elsif OS.linux?
+                if Hardware::CPU.intel?
+                  bin.install "garmin-linux-amd64" => "garmin"
+                else
+                  bin.install "garmin-linux-arm64" => "garmin"
+                end
+              end
+            end
+
+            test do
+              assert_match "garmin", shell_output("#{bin}/garmin --help")
+            end
+          end
+          EOF
       - name: Commit and push
         working-directory: homebrew-tap
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/garmin.rb
+          git add "Formula/${HOMEBREW_FORMULA_NAME}.rb"
           git diff --staged --quiet || git commit -m "Update garmin to ${{ steps.tag.outputs.value }}"
           git push
