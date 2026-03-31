@@ -1,8 +1,20 @@
 //! Garmin SSO Authentication
 //!
 //! Implements the Garmin Connect SSO login flow using the mobile JSON API.
-//! Ported from garth 0.8.0 (Python) which replaced the old HTML form-based
-//! approach that broke when Garmin changed their SSO page structure.
+//!
+//! ## Background
+//!
+//! The previous implementation scraped `<title>` tags from Garmin's SSO HTML
+//! page to determine login status (matching `garth < 0.8.0`). Garmin changed
+//! their SSO page structure, breaking this approach.
+//!
+//! This implementation ports the approach from `garth 0.8.0`, which switched
+//! to Garmin's mobile JSON API endpoints:
+//! - `GET  /mobile/sso/en/sign-in` — establish session cookies
+//! - `POST /mobile/api/login` — submit credentials, receive ticket or MFA challenge
+//! - `POST /mobile/api/mfa/verifyCode` — verify MFA code if required
+//!
+//! Reference: <https://github.com/matin/garth/blob/main/garth/sso.py>
 
 use crate::client::oauth1::{parse_oauth_response, OAuth1Signer, OAuthConsumer, OAuthToken};
 use crate::client::tokens::{OAuth1Token, OAuth2Token};
@@ -488,5 +500,56 @@ mod tests {
     fn test_sso_client_with_custom_domain() {
         let client = SsoClient::new(Some("garmin.cn")).unwrap();
         assert_eq!(client.domain, "garmin.cn");
+    }
+
+    #[test]
+    fn test_parse_successful_sso_response() {
+        let json = r#"{
+            "responseStatus": {"type": "SUCCESSFUL", "message": ""},
+            "serviceTicketId": "ST-12345-abc"
+        }"#;
+        let resp: SsoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            resp.response_status.unwrap().response_type,
+            "SUCCESSFUL"
+        );
+        assert_eq!(resp.service_ticket_id.unwrap(), "ST-12345-abc");
+    }
+
+    #[test]
+    fn test_parse_mfa_required_response() {
+        let json = r#"{
+            "responseStatus": {"type": "MFA_REQUIRED", "message": ""},
+            "customerMfaInfo": {"mfaLastMethodUsed": "email"}
+        }"#;
+        let resp: SsoResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            resp.response_status.unwrap().response_type,
+            "MFA_REQUIRED"
+        );
+        assert_eq!(
+            resp.customer_mfa_info.unwrap().mfa_last_method_used.unwrap(),
+            "email"
+        );
+    }
+
+    #[test]
+    fn test_parse_failed_sso_response() {
+        let json = r#"{
+            "responseStatus": {"type": "FAIL", "message": "Invalid credentials"}
+        }"#;
+        let resp: SsoResponse = serde_json::from_str(json).unwrap();
+        let status = resp.response_status.unwrap();
+        assert_eq!(status.response_type, "FAIL");
+        assert_eq!(status.message, "Invalid credentials");
+    }
+
+    #[test]
+    fn test_parse_missing_response_status() {
+        // Handles unexpected/empty JSON gracefully
+        let json = r#"{}"#;
+        let resp: SsoResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.response_status.is_none());
+        assert!(resp.service_ticket_id.is_none());
     }
 }
