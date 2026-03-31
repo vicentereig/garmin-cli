@@ -1,26 +1,30 @@
 //! Garmin SSO Authentication
 //!
-//! Implements the Garmin Connect SSO login flow, ported from the Python Garth library.
+//! Implements the Garmin Connect SSO login flow using the mobile JSON API.
+//! Ported from garth 0.8.0 (Python) which replaced the old HTML form-based
+//! approach that broke when Garmin changed their SSO page structure.
 
 use crate::client::oauth1::{parse_oauth_response, OAuth1Signer, OAuthConsumer, OAuthToken};
 use crate::client::tokens::{OAuth1Token, OAuth2Token};
 use crate::error::{GarminError, Result};
-use regex::Regex;
 use reqwest::cookie::Jar;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, REFERER, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default Garmin domain
 const DEFAULT_DOMAIN: &str = "garmin.com";
 
-/// User agent mimicking the Garmin mobile app
+/// Client ID for mobile API login
+const CLIENT_ID: &str = "GCM_ANDROID_DARK";
+
+/// User agent mimicking the Garmin mobile app (for OAuth endpoints)
 const MOBILE_USER_AGENT: &str = "com.garmin.android.apps.connectmobile";
 
-/// User agent for Connect API requests
-const API_USER_AGENT: &str = "GCM-iOS-5.7.2.1";
+/// Browser-like user agent for SSO pages (avoids Cloudflare challenges)
+const SSO_USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
 
 /// URL to fetch OAuth consumer credentials
 const OAUTH_CONSUMER_URL: &str = "https://thegarth.s3.amazonaws.com/oauth_consumer.json";
@@ -32,11 +36,61 @@ struct OAuthConsumerResponse {
     consumer_secret: String,
 }
 
+/// SSO login request body
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginRequest<'a> {
+    username: &'a str,
+    password: &'a str,
+    remember_me: bool,
+    captcha_token: &'a str,
+}
+
+/// SSO MFA verification request body
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MfaVerifyRequest<'a> {
+    mfa_method: &'a str,
+    mfa_verification_code: &'a str,
+    remember_my_browser: bool,
+    reconsent_list: Vec<String>,
+    mfa_setup: bool,
+}
+
+/// SSO response status
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SsoResponseStatus {
+    #[serde(rename = "type")]
+    response_type: String,
+    #[serde(default)]
+    message: String,
+}
+
+/// SSO login/MFA response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SsoResponse {
+    #[serde(default)]
+    response_status: Option<SsoResponseStatus>,
+    #[serde(default)]
+    service_ticket_id: Option<String>,
+    #[serde(default)]
+    customer_mfa_info: Option<MfaInfo>,
+}
+
+/// MFA information from login response
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MfaInfo {
+    #[serde(default)]
+    mfa_last_method_used: Option<String>,
+}
+
 /// SSO Client for Garmin authentication
 pub struct SsoClient {
     client: Client,
     domain: String,
-    last_url: Option<String>,
 }
 
 impl SsoClient {
@@ -52,224 +106,228 @@ impl SsoClient {
         Ok(Self {
             client,
             domain: domain.unwrap_or(DEFAULT_DOMAIN).to_string(),
-            last_url: None,
         })
     }
 
-    /// Perform full login flow
+    /// Build SSO page headers (browser-like to avoid Cloudflare)
+    fn sso_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(SSO_USER_AGENT));
+        headers.insert(
+            "Accept",
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+        );
+        headers.insert(
+            "Accept-Language",
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("navigate"));
+        headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("document"));
+        headers
+    }
+
+    /// Perform full login flow using mobile JSON API
     pub async fn login(
         &mut self,
         email: &str,
         password: &str,
         mfa_callback: Option<impl FnOnce() -> String>,
     ) -> Result<(OAuth1Token, OAuth2Token)> {
-        // Step 1: Initialize session and get CSRF token
-        let csrf_token = self.init_session_and_get_csrf().await?;
+        let service_url = format!(
+            "https://mobile.integration.{}/gcm/android",
+            self.domain
+        );
+        let login_params = [
+            ("clientId", CLIENT_ID),
+            ("locale", "en-US"),
+            ("service", service_url.as_str()),
+        ];
 
-        // Step 2: Submit login form
-        let login_result = self.submit_login(email, password, &csrf_token).await?;
+        // Step 1: Set cookies by visiting the sign-in page
+        let sign_in_url = format!("https://sso.{}/mobile/sso/en/sign-in", self.domain);
+        let mut headers = Self::sso_headers();
+        headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));
 
-        // Step 3: Handle MFA if required
-        let ticket = match login_result {
-            LoginResult::Success(ticket) => ticket,
-            LoginResult::MfaRequired => {
-                let mfa_code = mfa_callback.ok_or_else(|| GarminError::MfaRequired)?();
-                self.submit_mfa(&mfa_code, &csrf_token).await?
+        let _ = self
+            .client
+            .get(&sign_in_url)
+            .query(&[("clientId", CLIENT_ID)])
+            .headers(headers)
+            .send()
+            .await
+            .map_err(GarminError::Http)?
+            .text()
+            .await;
+
+        // Step 2: Submit login via JSON API
+        let login_url = format!("https://sso.{}/mobile/api/login", self.domain);
+        let login_body = LoginRequest {
+            username: email,
+            password,
+            remember_me: false,
+            captcha_token: "",
+        };
+
+        let response = self
+            .client
+            .post(&login_url)
+            .query(&login_params)
+            .headers(Self::sso_headers())
+            .json(&login_body)
+            .send()
+            .await
+            .map_err(GarminError::Http)?;
+
+        let status_code = response.status();
+        if status_code.as_u16() == 429 {
+            return Err(GarminError::auth(
+                "Rate limited by Garmin (429). Too many login attempts. Wait 15-30 minutes and try again.".to_string()
+            ));
+        }
+        if !status_code.is_success() && status_code.as_u16() != 200 {
+            let body = response.text().await.unwrap_or_default();
+            return Err(GarminError::auth(format!(
+                "SSO HTTP {}: {}", status_code, &body[..body.len().min(200)]
+            )));
+        }
+
+        let body_text = response.text().await.map_err(GarminError::Http)?;
+
+        let sso_resp: SsoResponse = serde_json::from_str(&body_text).map_err(|e| {
+            GarminError::invalid_response(format!("Failed to parse SSO response: {} | body: {}", e, &body_text[..body_text.len().min(200)]))
+        })?;
+
+        let resp_type = sso_resp
+            .response_status
+            .as_ref()
+            .map(|s| s.response_type.as_str())
+            .unwrap_or("UNKNOWN");
+
+        let ticket = match resp_type {
+            "SUCCESSFUL" => sso_resp
+                .service_ticket_id
+                .ok_or_else(|| GarminError::invalid_response("Missing serviceTicketId"))?,
+
+            "MFA_REQUIRED" => {
+                let mfa_method = sso_resp
+                    .customer_mfa_info
+                    .and_then(|info| info.mfa_last_method_used)
+                    .unwrap_or_else(|| "email".to_string());
+
+                let mfa_code = mfa_callback
+                    .ok_or_else(|| GarminError::MfaRequired)?();
+
+                self.submit_mfa(&mfa_code, &mfa_method, &login_params)
+                    .await?
+            }
+
+            _ => {
+                let message = sso_resp
+                    .response_status
+                    .map(|s| {
+                        if s.message.is_empty() {
+                            s.response_type
+                        } else {
+                            format!("{}: {}", s.response_type, s.message)
+                        }
+                    })
+                    .unwrap_or_else(|| "Unknown error".to_string());
+                return Err(GarminError::auth(format!("SSO error: {}", message)));
             }
         };
 
-        // Step 4: Exchange ticket for OAuth1 token
-        let oauth1 = self.get_oauth1_token(&ticket).await?;
-
-        // Step 5: Exchange OAuth1 for OAuth2 token
-        let oauth2 = self.exchange_oauth1_for_oauth2(&oauth1).await?;
-
-        Ok((oauth1, oauth2))
+        // Step 3: Complete login (set Cloudflare LB cookie, get OAuth tokens)
+        self.complete_login(&ticket).await
     }
 
-    /// Initialize session and extract CSRF token
-    async fn init_session_and_get_csrf(&mut self) -> Result<String> {
-        let sso_base = format!("https://sso.{}/sso", self.domain);
-        let sso_embed = format!("{}/embed", sso_base);
-
-        // First request to set cookies (gauthHost points to SSO without /embed)
-        let embed_params = [
-            ("id", "gauth-widget"),
-            ("embedWidget", "true"),
-            ("gauthHost", sso_base.as_str()),
-        ];
-
-        let resp = self
-            .client
-            .get(&sso_embed)
-            .query(&embed_params)
-            .header(USER_AGENT, API_USER_AGENT)
-            .send()
-            .await
-            .map_err(GarminError::Http)?;
-
-        // Consume the response body
-        let _ = resp.text().await;
-
-        // Second request to get CSRF token (gauthHost now points to SSO_EMBED)
-        let signin_url = format!("{}/signin", sso_base);
-        let signin_params = [
-            ("id", "gauth-widget"),
-            ("embedWidget", "true"),
-            ("gauthHost", sso_embed.as_str()),
-            ("service", sso_embed.as_str()),
-            ("source", sso_embed.as_str()),
-            ("redirectAfterAccountLoginUrl", sso_embed.as_str()),
-            ("redirectAfterAccountCreationUrl", sso_embed.as_str()),
-        ];
-
-        let response = self
-            .client
-            .get(&signin_url)
-            .query(&signin_params)
-            .header(USER_AGENT, API_USER_AGENT)
-            .send()
-            .await
-            .map_err(GarminError::Http)?;
-
-        self.last_url = Some(response.url().to_string());
-        let html = response.text().await.map_err(GarminError::Http)?;
-
-        extract_csrf_token(&html)
-    }
-
-    /// Submit login form with email and password
-    async fn submit_login(
-        &mut self,
-        email: &str,
-        password: &str,
-        csrf_token: &str,
-    ) -> Result<LoginResult> {
-        let sso_base = format!("https://sso.{}/sso", self.domain);
-        let sso_embed = format!("{}/embed", sso_base);
-        let signin_url = format!("{}/signin", sso_base);
-
-        let signin_params = [
-            ("id", "gauth-widget"),
-            ("embedWidget", "true"),
-            ("gauthHost", sso_embed.as_str()),
-            ("service", sso_embed.as_str()),
-            ("source", sso_embed.as_str()),
-            ("redirectAfterAccountLoginUrl", sso_embed.as_str()),
-            ("redirectAfterAccountCreationUrl", sso_embed.as_str()),
-        ];
-
-        let form_data = [
-            ("username", email),
-            ("password", password),
-            ("embed", "true"),
-            ("_csrf", csrf_token),
-        ];
-
-        let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(API_USER_AGENT));
-        if let Some(ref referer) = self.last_url {
-            headers.insert(REFERER, HeaderValue::from_str(referer).unwrap());
-        }
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/x-www-form-urlencoded"),
-        );
-
-        let response = self
-            .client
-            .post(&signin_url)
-            .query(&signin_params)
-            .headers(headers)
-            .form(&form_data)
-            .send()
-            .await
-            .map_err(GarminError::Http)?;
-
-        self.last_url = Some(response.url().to_string());
-        let html = response.text().await.map_err(GarminError::Http)?;
-
-        // Check response title
-        let title = extract_title(&html)?;
-
-        if title.contains("MFA") {
-            Ok(LoginResult::MfaRequired)
-        } else if title == "Success" {
-            let ticket = extract_ticket(&html)?;
-            Ok(LoginResult::Success(ticket))
-        } else {
-            Err(GarminError::auth(format!(
-                "Unexpected login response: {}",
-                title
-            )))
-        }
-    }
-
-    /// Submit MFA code
-    async fn submit_mfa(&mut self, mfa_code: &str, csrf_token: &str) -> Result<String> {
-        let sso_base = format!("https://sso.{}/sso", self.domain);
-        let sso_embed = format!("{}/embed", sso_base);
-        let mfa_url = format!("{}/verifyMFA/loginEnterMfaCode", sso_base);
-
-        let signin_params = [
-            ("id", "gauth-widget"),
-            ("embedWidget", "true"),
-            ("gauthHost", sso_embed.as_str()),
-            ("service", sso_embed.as_str()),
-            ("source", sso_embed.as_str()),
-            ("redirectAfterAccountLoginUrl", sso_embed.as_str()),
-            ("redirectAfterAccountCreationUrl", sso_embed.as_str()),
-        ];
-
-        let form_data = [
-            ("mfa-code", mfa_code),
-            ("embed", "true"),
-            ("_csrf", csrf_token),
-            ("fromPage", "setupEnterMfaCode"),
-        ];
-
-        let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(API_USER_AGENT));
-        if let Some(ref referer) = self.last_url {
-            headers.insert(REFERER, HeaderValue::from_str(referer).unwrap());
-        }
+    /// Submit MFA verification code via JSON API
+    async fn submit_mfa(
+        &self,
+        mfa_code: &str,
+        mfa_method: &str,
+        login_params: &[(&str, &str)],
+    ) -> Result<String> {
+        let mfa_url = format!("https://sso.{}/mobile/api/mfa/verifyCode", self.domain);
+        let mfa_body = MfaVerifyRequest {
+            mfa_method,
+            mfa_verification_code: mfa_code,
+            remember_my_browser: false,
+            reconsent_list: vec![],
+            mfa_setup: false,
+        };
 
         let response = self
             .client
             .post(&mfa_url)
-            .query(&signin_params)
-            .headers(headers)
-            .form(&form_data)
+            .query(login_params)
+            .headers(Self::sso_headers())
+            .json(&mfa_body)
             .send()
             .await
             .map_err(GarminError::Http)?;
 
-        let html = response.text().await.map_err(GarminError::Http)?;
-        let title = extract_title(&html)?;
+        let sso_resp: SsoResponse = response.json().await.map_err(|e| {
+            GarminError::invalid_response(format!("Failed to parse MFA response: {}", e))
+        })?;
 
-        if title == "Success" {
-            extract_ticket(&html)
-        } else {
-            Err(GarminError::auth(format!(
+        let resp_type = sso_resp
+            .response_status
+            .as_ref()
+            .map(|s| s.response_type.as_str())
+            .unwrap_or("UNKNOWN");
+
+        if resp_type != "SUCCESSFUL" {
+            let message = sso_resp
+                .response_status
+                .map(|s| s.message)
+                .unwrap_or_default();
+            return Err(GarminError::auth(format!(
                 "MFA verification failed: {}",
-                title
-            )))
+                message
+            )));
         }
+
+        sso_resp
+            .service_ticket_id
+            .ok_or_else(|| GarminError::invalid_response("Missing serviceTicketId after MFA"))
+    }
+
+    /// Complete login: set Cloudflare LB cookie and exchange for OAuth tokens
+    async fn complete_login(&self, ticket: &str) -> Result<(OAuth1Token, OAuth2Token)> {
+        // Best-effort: set Cloudflare LB cookie for backend pinning
+        let portal_url = format!("https://sso.{}/portal/sso/embed", self.domain);
+        let mut headers = Self::sso_headers();
+        headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
+        let _ = self.client.get(&portal_url).headers(headers).send().await;
+
+        // Exchange ticket for OAuth1 token
+        let oauth1 = self.get_oauth1_token(ticket).await?;
+
+        // Exchange OAuth1 for OAuth2 token
+        let oauth2 = self.exchange_oauth1_for_oauth2(&oauth1, true).await?;
+
+        Ok((oauth1, oauth2))
     }
 
     /// Exchange ticket for OAuth1 token
     async fn get_oauth1_token(&self, ticket: &str) -> Result<OAuth1Token> {
-        // Fetch OAuth consumer credentials
         let consumer = self.fetch_oauth_consumer().await?;
 
-        let base_url = format!("https://connectapi.{}/oauth-service/oauth/", self.domain);
-        let login_url = format!("https://sso.{}/sso/embed", self.domain);
+        let base_url = format!(
+            "https://connectapi.{}/oauth-service/oauth/",
+            self.domain
+        );
+        let login_url = format!(
+            "https://mobile.integration.{}/gcm/android",
+            self.domain
+        );
         let url = format!(
             "{}preauthorized?ticket={}&login-url={}&accepts-mfa-tokens=true",
             base_url, ticket, login_url
         );
 
-        // Create OAuth1 signer with just consumer credentials
         let signer = OAuth1Signer::new(OAuthConsumer {
             key: consumer.consumer_key.clone(),
             secret: consumer.consumer_secret.clone(),
@@ -277,8 +335,7 @@ impl SsoClient {
 
         let auth_header = signer.sign("GET", &url, &[]);
 
-        // IMPORTANT: Use a NEW client without cookies for OAuth1 requests
-        // This matches Python's behavior where OAuth1Session is separate from SSO session
+        // Use a separate client without cookies (matches garth's OAuth1Session behavior)
         let oauth_client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -293,7 +350,6 @@ impl SsoClient {
             .map_err(GarminError::Http)?;
 
         let status = response.status();
-
         if !status.is_success() {
             return Err(GarminError::auth(format!(
                 "Failed to get OAuth1 token: {}",
@@ -314,7 +370,8 @@ impl SsoClient {
             .clone();
         let mfa_token = params.get("mfa_token").cloned();
 
-        let mut token = OAuth1Token::new(oauth_token, oauth_token_secret).with_domain(&self.domain);
+        let mut token =
+            OAuth1Token::new(oauth_token, oauth_token_secret).with_domain(&self.domain);
 
         if let Some(mfa) = mfa_token {
             token = token.with_mfa(mfa, None);
@@ -324,7 +381,11 @@ impl SsoClient {
     }
 
     /// Exchange OAuth1 token for OAuth2 token
-    async fn exchange_oauth1_for_oauth2(&self, oauth1: &OAuth1Token) -> Result<OAuth2Token> {
+    async fn exchange_oauth1_for_oauth2(
+        &self,
+        oauth1: &OAuth1Token,
+        login: bool,
+    ) -> Result<OAuth2Token> {
         let consumer = self.fetch_oauth_consumer().await?;
 
         let url = format!(
@@ -332,7 +393,6 @@ impl SsoClient {
             self.domain
         );
 
-        // Create OAuth1 signer with token
         let signer = OAuth1Signer::new(OAuthConsumer {
             key: consumer.consumer_key.clone(),
             secret: consumer.consumer_secret.clone(),
@@ -342,15 +402,19 @@ impl SsoClient {
             secret: oauth1.oauth_token_secret.clone(),
         });
 
-        let params: Vec<(String, String)> = if let Some(ref mfa_token) = oauth1.mfa_token {
-            vec![("mfa_token".to_string(), mfa_token.clone())]
-        } else {
-            vec![]
-        };
+        let mut form_params: Vec<(String, String)> = vec![];
+        if login {
+            form_params.push((
+                "audience".to_string(),
+                "GARMIN_CONNECT_MOBILE_ANDROID_DI".to_string(),
+            ));
+        }
+        if let Some(ref mfa_token) = oauth1.mfa_token {
+            form_params.push(("mfa_token".to_string(), mfa_token.clone()));
+        }
 
-        let auth_header = signer.sign("POST", &url, &params);
+        let auth_header = signer.sign("POST", &url, &form_params);
 
-        // Use a separate client without cookies (matches Python's OAuth1Session behavior)
         let oauth_client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -362,14 +426,13 @@ impl SsoClient {
             .header("Authorization", auth_header)
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded");
 
-        if let Some(ref mfa_token) = oauth1.mfa_token {
-            request = request.form(&[("mfa_token", mfa_token)]);
+        if !form_params.is_empty() {
+            request = request.form(&form_params);
         }
 
         let response = request.send().await.map_err(GarminError::Http)?;
 
         let status = response.status();
-
         if !status.is_success() {
             return Err(GarminError::auth(format!(
                 "Failed to exchange OAuth1 for OAuth2: {}",
@@ -381,7 +444,6 @@ impl SsoClient {
             GarminError::invalid_response(format!("Failed to parse OAuth2 token: {}", e))
         })?;
 
-        // Set expiration timestamps
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -408,88 +470,13 @@ impl SsoClient {
 
     /// Refresh OAuth2 token using OAuth1 token
     pub async fn refresh_oauth2(&self, oauth1: &OAuth1Token) -> Result<OAuth2Token> {
-        self.exchange_oauth1_for_oauth2(oauth1).await
+        self.exchange_oauth1_for_oauth2(oauth1, false).await
     }
-}
-
-/// Result of login attempt
-enum LoginResult {
-    Success(String), // ticket
-    MfaRequired,
-}
-
-/// Extract CSRF token from HTML
-fn extract_csrf_token(html: &str) -> Result<String> {
-    let re = Regex::new(r#"name="_csrf"\s+value="([^"]+)""#).unwrap();
-    re.captures(html)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| GarminError::invalid_response("Could not find CSRF token"))
-}
-
-/// Extract page title from HTML
-fn extract_title(html: &str) -> Result<String> {
-    let re = Regex::new(r"<title>([^<]+)</title>").unwrap();
-    re.captures(html)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| GarminError::invalid_response("Could not find page title"))
-}
-
-/// Extract ticket from success HTML
-fn extract_ticket(html: &str) -> Result<String> {
-    let re = Regex::new(r#"embed\?ticket=([^"]+)""#).unwrap();
-    re.captures(html)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| GarminError::invalid_response("Could not find ticket in response"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_extract_csrf_token() {
-        let html = r#"<input type="hidden" name="_csrf" value="abc123token">"#;
-        let token = extract_csrf_token(html).unwrap();
-        assert_eq!(token, "abc123token");
-    }
-
-    #[test]
-    fn test_extract_csrf_token_missing() {
-        let html = r#"<html><body>No token here</body></html>"#;
-        let result = extract_csrf_token(html);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_extract_title() {
-        let html = r#"<html><head><title>Success</title></head></html>"#;
-        let title = extract_title(html).unwrap();
-        assert_eq!(title, "Success");
-    }
-
-    #[test]
-    fn test_extract_title_mfa() {
-        let html = r#"<html><head><title>GARMIN > MFA Challenge</title></head></html>"#;
-        let title = extract_title(html).unwrap();
-        assert!(title.contains("MFA"));
-    }
-
-    #[test]
-    fn test_extract_ticket() {
-        let html = r#"<a href="embed?ticket=ST-12345-abc">Continue</a>"#;
-        let ticket = extract_ticket(html).unwrap();
-        assert_eq!(ticket, "ST-12345-abc");
-    }
-
-    #[test]
-    fn test_extract_ticket_missing() {
-        let html = r#"<html><body>No ticket</body></html>"#;
-        let result = extract_ticket(html);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_sso_client_creation() {
