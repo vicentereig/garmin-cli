@@ -121,8 +121,8 @@ impl SsoClient {
         })
     }
 
-    /// Build SSO page headers (browser-like to avoid Cloudflare)
-    fn sso_headers() -> HeaderMap {
+    /// Build SSO page headers (browser-like to establish session cookies)
+    fn sso_page_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(SSO_USER_AGENT));
         headers.insert(
@@ -137,6 +137,27 @@ impl SsoClient {
         );
         headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("navigate"));
         headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("document"));
+        headers
+    }
+
+    /// Build mobile JSON API headers for login/MFA endpoints
+    fn sso_api_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(MOBILE_USER_AGENT));
+        headers.insert(
+            "Accept",
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
+        headers.insert(
+            "Accept-Language",
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert("Origin", HeaderValue::from_static("https://sso.garmin.com"));
+        headers.insert(
+            "Referer",
+            HeaderValue::from_static("https://sso.garmin.com/mobile/sso/en/sign-in"),
+        );
         headers
     }
 
@@ -156,7 +177,7 @@ impl SsoClient {
 
         // Step 1: Set cookies by visiting the sign-in page
         let sign_in_url = format!("https://sso.{}/mobile/sso/en/sign-in", self.domain);
-        let mut headers = Self::sso_headers();
+        let mut headers = Self::sso_page_headers();
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));
 
         let _ = self
@@ -183,28 +204,28 @@ impl SsoClient {
             .client
             .post(&login_url)
             .query(&login_params)
-            .headers(Self::sso_headers())
+            .headers(Self::sso_api_headers())
             .json(&login_body)
             .send()
             .await
             .map_err(GarminError::Http)?;
 
         let status_code = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+
         if status_code.as_u16() == 429 {
-            return Err(GarminError::auth(
-                "Rate limited by Garmin (429). Too many login attempts. Wait 15-30 minutes and try again.".to_string()
-            ));
-        }
-        if !status_code.is_success() && status_code.as_u16() != 200 {
-            let body = response.text().await.unwrap_or_default();
             return Err(GarminError::auth(format!(
-                "SSO HTTP {}: {}",
-                status_code,
-                &body[..body.len().min(200)]
+                "Rate limited by Garmin (429). Response body: {}",
+                &body_text[..body_text.len().min(400)]
             )));
         }
-
-        let body_text = response.text().await.map_err(GarminError::Http)?;
+        if !status_code.is_success() && status_code.as_u16() != 200 {
+            return Err(GarminError::auth(format!(
+                "SSO HTTP {}. Response body: {}",
+                status_code,
+                &body_text[..body_text.len().min(400)]
+            )));
+        }
 
         let sso_resp: SsoResponse = serde_json::from_str(&body_text).map_err(|e| {
             GarminError::invalid_response(format!(
@@ -276,7 +297,7 @@ impl SsoClient {
             .client
             .post(&mfa_url)
             .query(login_params)
-            .headers(Self::sso_headers())
+            .headers(Self::sso_api_headers())
             .json(&mfa_body)
             .send()
             .await
@@ -312,7 +333,7 @@ impl SsoClient {
     async fn complete_login(&self, ticket: &str) -> Result<(OAuth1Token, OAuth2Token)> {
         // Best-effort: set Cloudflare LB cookie for backend pinning
         let portal_url = format!("https://sso.{}/portal/sso/embed", self.domain);
-        let mut headers = Self::sso_headers();
+        let mut headers = Self::sso_page_headers();
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
         let _ = self.client.get(&portal_url).headers(headers).send().await;
 
