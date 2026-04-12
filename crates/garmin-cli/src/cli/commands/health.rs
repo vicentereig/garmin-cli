@@ -833,25 +833,35 @@ pub async fn training_status_range(days: u32, profile: Option<String>) -> Result
         match client.get_json::<serde_json::Value>(&oauth2, &path).await {
             Ok(data) => {
                 // Extract status phrase
-                let status = data
+                let date_str = date.to_string();
+                let entry = data
                     .get("mostRecentTrainingStatus")
                     .and_then(|s| s.get("latestTrainingStatusData"))
                     .and_then(|d| d.as_object())
-                    .and_then(|m| m.values().next())
+                    .and_then(|m| {
+                        m.values().find(|entry| {
+                            entry.get("calendarDate").and_then(|v| v.as_str())
+                                == Some(date_str.as_str())
+                        })
+                    })
+                    .or_else(|| {
+                        data.get("trainingStatusHistory")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| {
+                                arr.iter().find(|entry| {
+                                    entry.get("calendarDate").and_then(|v| v.as_str())
+                                        == Some(date_str.as_str())
+                                })
+                            })
+                    });
+
+                let status = entry
                     .and_then(|entry| entry.get("trainingStatusFeedbackPhrase"))
                     .and_then(|v| v.as_str())
-                    .map(|s| {
-                        // Extract just the key part (e.g., "PRODUCTIVE" from "PRODUCTIVE_2")
-                        s.split('_').next().unwrap_or(s).to_lowercase()
-                    })
+                    .map(|s| s.split('_').next().unwrap_or(s).to_lowercase())
                     .unwrap_or_else(|| "-".to_string());
 
-                // Extract load data
-                let (acute, chronic, ratio) = data
-                    .get("mostRecentTrainingStatus")
-                    .and_then(|s| s.get("latestTrainingStatusData"))
-                    .and_then(|d| d.as_object())
-                    .and_then(|m| m.values().next())
+                let (acute, chronic, ratio) = entry
                     .and_then(|entry| entry.get("acuteTrainingLoadDTO"))
                     .map(|load| {
                         let a = load
@@ -1245,18 +1255,21 @@ pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> 
     let display_name = get_display_name(&client, &oauth2).await?;
 
     let path = format!(
-        "/metrics-service/metrics/racepredictions/latest/{}",
-        display_name
+        "/metrics-service/metrics/racepredictions/daily/{}?fromCalendarDate={}&toCalendarDate={}",
+        display_name, date, date
     );
 
     let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
+    let entry = data
+        .as_array()
+        .and_then(|arr| arr.first())
+        .unwrap_or(&data);
 
     println!("Race Predictions for {}", date);
     println!("{}", "-".repeat(50));
     println!("{:<16} {:>12} {:>14}", "Race", "Time", "Pace");
     println!("{}", "-".repeat(50));
 
-    // API returns flat structure: time5K, time10K, timeHalfMarathon, timeMarathon
     let races = [
         ("time5K", "5K", 5.0),
         ("time10K", "10K", 10.0),
@@ -1265,7 +1278,7 @@ pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> 
     ];
 
     for (field, label, distance_km) in races {
-        if let Some(time) = data.get(field).and_then(|v| v.as_f64()) {
+        if let Some(time) = entry.get(field).and_then(|v| v.as_f64()) {
             let formatted = format_race_time(time);
             let pace_sec = time / distance_km;
             let pace = format_pace(pace_sec);
