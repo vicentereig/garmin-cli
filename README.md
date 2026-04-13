@@ -5,32 +5,31 @@
 [![Latest Release](https://img.shields.io/github/v/release/grunt3714-lgtm/garmin-cli?display_name=tag)](https://github.com/grunt3714-lgtm/garmin-cli/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Garmin Connect CLI built with Rust.
+Fast Garmin Connect CLI for Linux, with working auth, sync, and health/training commands.
 
-This fork focuses on:
-- Linux release binaries
-- working Garmin auth
-- OpenClaw integration
-- health and training analysis workflows
+## Install
 
-## Project Status
-
-- **Build status:** tracked by the CI badge above
-- **Release status:** tracked by the release workflow badge above
-- **Latest downloadable binary:** linked by the latest release badge above
-- **Current release target:** Linux amd64
-
-## Installation
-
-### Binary Download
-
-Pre-built Linux amd64 binaries are available on the [releases page](https://github.com/grunt3714-lgtm/garmin-cli/releases).
-
-### Build from source
+One-liner:
 
 ```bash
-cargo build --release
-install -Dm755 target/release/garmin ~/.local/bin/garmin
+curl -fsSL https://github.com/grunt3714-lgtm/garmin-cli/releases/latest/download/garmin-linux-amd64.tar.gz | tar -xz && install -Dm755 garmin-linux-amd64 ~/.local/bin/garmin
+```
+
+Build from source:
+
+```bash
+cargo build --release && install -Dm755 target/release/garmin ~/.local/bin/garmin
+```
+
+## Quick examples
+
+```bash
+garmin auth login
+garmin health summary
+garmin health sleep --days 7
+garmin health training-readiness --days 14
+garmin health training-status --days 14
+garmin sync run --backfill
 ```
 
 ## Authentication
@@ -46,82 +45,25 @@ garmin auth status
 garmin auth logout
 ```
 
-## Health Commands
+## More examples
 
 ```bash
-# Daily summary
+# Today
 garmin health summary
-garmin health summary --date 2025-12-13
 
-# Sleep
-garmin health sleep
-garmin health sleep --date 2025-12-13
+# Recovery trends
 garmin health sleep --days 7
-
-# Stress
-garmin health stress
-garmin health stress --date 2025-12-13
-garmin health stress --days 7
-
-# Heart rate
-garmin health heart-rate
-garmin health heart-rate --date 2025-12-13
-
-# Body battery
-garmin health body-battery
-garmin health body-battery --date 2025-12-13
-
-# Steps (with date range)
-garmin health steps
-garmin health steps --days 28
-
-# Calories
-garmin health calories
-garmin health calories --days 7
-
-# Weight
-garmin health weight
-garmin health weight --from 2025-01-01 --to 2025-12-31
-garmin health weight-add 80.2 --unit kg
-
-# VO2 Max
-garmin health vo2max
-garmin health vo2max --date 2025-12-10
-
-# Training readiness (score, level, acute load, HRV)
-garmin health training-readiness
-garmin health training-readiness --date 2025-12-13
+garmin health hrv --date 2025-12-13
 garmin health training-readiness --days 14
 
-# Training status (load, ratio, focus)
-garmin health training-status
-garmin health training-status --date 2025-12-13
+# Training state
 garmin health training-status --days 14
+garmin health race-predictions --date 2025-12-13
+garmin health performance-summary --date 2025-12-13
 
-# HRV
-garmin health hrv
-garmin health hrv --date 2025-12-13
-
-# Fitness age
-garmin health fitness-age
-
-# Performance metrics
-garmin health lactate-threshold --days 90
-garmin health race-predictions
-garmin health endurance-score --days 30
-garmin health hill-score --days 30
-garmin health personal-records
-garmin health performance-summary
-
-# Additional health metrics
-garmin health spo2
-garmin health respiration
-garmin health intensity-minutes
-garmin health blood-pressure --from 2025-01-01 --to 2025-12-31
-garmin health hydration
-
-# Health insights (sleep/stress correlations)
-garmin health insights
+# Other useful commands
+garmin health steps --days 28
+garmin health weight --from 2025-01-01 --to 2025-12-31
 garmin health insights --days 28
 ```
 
