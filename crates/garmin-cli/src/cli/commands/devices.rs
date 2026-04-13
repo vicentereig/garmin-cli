@@ -12,9 +12,9 @@ use super::auth::refresh_token;
 /// List registered devices
 pub async fn list(profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = "/device-service/deviceregistration/devices";
 
@@ -71,9 +71,9 @@ pub async fn list(profile: Option<String>) -> Result<()> {
 /// Get device info
 pub async fn get(device_id: &str, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!(
         "/device-service/deviceservice/device-info/settings/{}",

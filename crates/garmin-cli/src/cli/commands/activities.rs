@@ -11,9 +11,9 @@ use super::auth::refresh_token;
 /// List activities
 pub async fn list(limit: u32, start: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let path = format!(
         "/activitylist-service/activities/search/activities?limit={}&start={}",
         limit, start
@@ -64,9 +64,9 @@ pub async fn list(limit: u32, start: u32, profile: Option<String>) -> Result<()>
 /// Get activity details
 pub async fn get(id: u64, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let path = format!("/activity-service/activity/{}", id);
 
     let activity: serde_json::Value = client.get_json(&oauth2, &path).await?;
@@ -85,9 +85,9 @@ pub async fn download(
     profile: Option<String>,
 ) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     // Build path based on format
     let (path, extension) = match format.to_lowercase().as_str() {
@@ -137,7 +137,7 @@ pub async fn download(
 /// Upload activity file
 pub async fn upload(file: &str, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let file_path = Path::new(file);
 
@@ -148,7 +148,7 @@ pub async fn upload(file: &str, profile: Option<String>) -> Result<()> {
         )));
     }
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     println!("Uploading {}...", file);
 

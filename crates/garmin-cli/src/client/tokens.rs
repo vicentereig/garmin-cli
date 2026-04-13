@@ -30,11 +30,6 @@ impl OAuth1Token {
         }
     }
 
-    pub fn with_domain(mut self, domain: impl Into<String>) -> Self {
-        self.domain = domain.into();
-        self
-    }
-
     pub fn with_mfa(mut self, mfa_token: String, expiration: Option<DateTime<Utc>>) -> Self {
         self.mfa_token = Some(mfa_token);
         self.mfa_expiration_timestamp = expiration;
@@ -94,17 +89,6 @@ mod tests {
         assert_eq!(token.domain, "garmin.com");
         assert!(token.mfa_token.is_none());
         assert!(token.mfa_expiration_timestamp.is_none());
-    }
-
-    #[test]
-    fn test_oauth1_token_with_domain() {
-        let token = OAuth1Token::new(
-            "test_oauth_token".to_string(),
-            "test_oauth_secret".to_string(),
-        )
-        .with_domain("garmin.cn");
-
-        assert_eq!(token.domain, "garmin.cn");
     }
 
     #[test]

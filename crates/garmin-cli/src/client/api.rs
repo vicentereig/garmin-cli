@@ -23,14 +23,14 @@ pub struct GarminClient {
 }
 
 impl GarminClient {
-    /// Create a new API client for the given domain
-    pub fn new(domain: &str) -> Self {
+    /// Create a new API client for Garmin Connect.
+    pub fn new() -> Self {
         Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("Failed to create HTTP client"),
-            base_url: format!("https://connectapi.{}", domain),
+            base_url: "https://connectapi.garmin.com".to_string(),
         }
     }
 
@@ -192,13 +192,19 @@ impl GarminClient {
     }
 }
 
+impl Default for GarminClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_build_url() {
-        let client = GarminClient::new("garmin.com");
+        let client = GarminClient::new();
         assert_eq!(
             client.build_url("/activity-service/activity/123"),
             "https://connectapi.garmin.com/activity-service/activity/123"
@@ -207,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = GarminClient::new("garmin.com");
+        let client = GarminClient::new();
         assert_eq!(client.base_url, "https://connectapi.garmin.com");
     }
 }

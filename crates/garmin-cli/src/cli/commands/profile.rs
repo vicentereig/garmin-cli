@@ -9,9 +9,9 @@ use super::auth::refresh_token;
 /// Show user profile
 pub async fn show(profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let social: serde_json::Value = client
         .get_json(&oauth2, "/userprofile-service/socialProfile")
@@ -44,9 +44,9 @@ pub async fn show(profile: Option<String>) -> Result<()> {
 /// Show user settings
 pub async fn settings(profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let settings: serde_json::Value = client
         .get_json(&oauth2, "/userprofile-service/userprofile/user-settings")

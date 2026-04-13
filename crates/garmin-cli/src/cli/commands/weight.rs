@@ -10,9 +10,9 @@ use super::auth::refresh_token;
 /// List weight entries in a date range
 pub async fn list(from: Option<String>, to: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     // Default to last 30 days if no dates provided
     let today = Local::now().date_naive();
@@ -105,9 +105,9 @@ pub async fn list(from: Option<String>, to: Option<String>, profile: Option<Stri
 /// Add a weight entry
 pub async fn add(weight: f64, unit: &str, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     // Convert to grams (Garmin API uses grams)
     let weight_grams = match unit.to_lowercase().as_str() {
@@ -147,9 +147,9 @@ pub async fn add(weight: f64, unit: &str, profile: Option<String>) -> Result<()>
 /// Get latest weight
 pub async fn latest(profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = "/weight-service/weight/latest";
 

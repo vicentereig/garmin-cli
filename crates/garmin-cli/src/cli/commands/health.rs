@@ -10,10 +10,10 @@ use super::auth::refresh_token;
 /// Get daily summary for a date
 pub async fn summary(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let display_name = get_display_name(&client, &oauth2).await?;
     let path = format!(
@@ -89,10 +89,10 @@ async fn get_display_name(
 /// Get sleep data for a date
 pub async fn sleep(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     // Get display name for sleep endpoint
     let display_name = get_display_name(&client, &oauth2).await?;
@@ -115,9 +115,9 @@ pub async fn sleep(date: Option<String>, profile: Option<String>) -> Result<()> 
 /// Get sleep data for multiple days
 pub async fn sleep_range(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
 
     // Get display name for sleep endpoint
@@ -183,10 +183,10 @@ pub async fn sleep_range(days: u32, profile: Option<String>) -> Result<()> {
 /// Get stress data for a date
 pub async fn stress(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     // dailyStress endpoint: /wellness-service/wellness/dailyStress/{date}
     let path = format!("/wellness-service/wellness/dailyStress/{}", date);
@@ -279,9 +279,9 @@ fn stress_level(level: i64) -> &'static str {
 /// Get stress data for multiple days
 pub async fn stress_range(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
 
     println!("{:<12} {:>6} {:>6}", "Date", "Avg", "Max");
@@ -319,10 +319,10 @@ pub async fn stress_range(days: u32, profile: Option<String>) -> Result<()> {
 /// Get body battery data for a date
 pub async fn body_battery(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!(
         "/wellness-service/wellness/bodyBattery/reports/daily?startDate={}&endDate={}",
@@ -368,9 +368,9 @@ pub async fn body_battery(date: Option<String>, profile: Option<String>) -> Resu
 /// Get body battery data for multiple days
 pub async fn body_battery_range(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let start_date = today - Duration::days(days as i64 - 1);
 
@@ -415,10 +415,10 @@ pub async fn body_battery_range(days: u32, profile: Option<String>) -> Result<()
 /// Get heart rate data for a date
 pub async fn heart_rate(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let display_name = get_display_name(&client, &oauth2).await?;
     let path = format!(
@@ -483,9 +483,9 @@ fn format_duration(seconds: Option<i64>) -> String {
 /// Get calorie data for a date range
 pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let display_name = get_display_name(&client, &oauth2).await?;
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(10);
@@ -560,10 +560,10 @@ pub async fn calories(days: Option<u32>, profile: Option<String>) -> Result<()> 
 /// Get VO2 max and performance metrics
 pub async fn vo2max(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
 
@@ -611,10 +611,10 @@ pub async fn vo2max(date: Option<String>, profile: Option<String>) -> Result<()>
 /// Get training readiness score
 pub async fn training_readiness(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
 
@@ -663,10 +663,10 @@ pub async fn training_readiness(date: Option<String>, profile: Option<String>) -
 /// Get training status
 pub async fn training_status(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!(
         "/metrics-service/metrics/trainingstatus/aggregated/{}",
@@ -812,9 +812,9 @@ pub async fn training_status(date: Option<String>, profile: Option<String>) -> R
 /// Get training status for multiple days
 pub async fn training_status_range(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
 
     println!(
@@ -890,9 +890,9 @@ pub async fn training_status_range(days: u32, profile: Option<String>) -> Result
 /// Get training readiness for multiple days
 pub async fn training_readiness_range(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
 
     println!(
@@ -950,10 +950,10 @@ pub async fn training_readiness_range(days: u32, profile: Option<String>) -> Res
 /// Get HRV data
 pub async fn hrv(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/hrv-service/hrv/{}", date);
 
@@ -988,10 +988,10 @@ pub async fn hrv(date: Option<String>, profile: Option<String>) -> Result<()> {
 /// Get fitness age
 pub async fn fitness_age(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/fitnessage-service/fitnessage/{}", date);
 
@@ -1030,9 +1030,9 @@ pub async fn fitness_age(date: Option<String>, profile: Option<String>) -> Resul
 /// Get daily steps for a date range
 pub async fn steps(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(10);
     let start_date = today - Duration::days(num_days as i64 - 1);
@@ -1145,9 +1145,9 @@ fn print_sleep_summary(data: &serde_json::Value) {
 /// Get lactate threshold data
 pub async fn lactate_threshold(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(90);
     let start_date = today - Duration::days(num_days as i64 - 1);
@@ -1238,10 +1238,10 @@ pub async fn lactate_threshold(days: Option<u32>, profile: Option<String>) -> Re
 /// Get race predictions
 pub async fn race_predictions(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let display_name = get_display_name(&client, &oauth2).await?;
 
     let path = format!(
@@ -1298,9 +1298,9 @@ fn format_pace(sec_per_km: f64) -> String {
 /// Get endurance score
 pub async fn endurance_score(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(30);
     let start_date = today - Duration::days(num_days as i64 - 1);
@@ -1371,9 +1371,9 @@ pub async fn endurance_score(days: Option<u32>, profile: Option<String>) -> Resu
 /// Get hill score
 pub async fn hill_score(days: Option<u32>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let num_days = days.unwrap_or(30);
     let start_date = today - Duration::days(num_days as i64 - 1);
@@ -1444,10 +1444,10 @@ pub async fn hill_score(days: Option<u32>, profile: Option<String>) -> Result<()
 /// Get SpO2 (blood oxygen) data
 pub async fn spo2(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/wellness-service/wellness/daily/spo2/{}", date);
 
@@ -1474,10 +1474,10 @@ pub async fn spo2(date: Option<String>, profile: Option<String>) -> Result<()> {
 /// Get respiration data
 pub async fn respiration(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/wellness-service/wellness/daily/respiration/{}", date);
 
@@ -1514,10 +1514,10 @@ pub async fn respiration(date: Option<String>, profile: Option<String>) -> Resul
 /// Get intensity minutes
 pub async fn intensity_minutes(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/wellness-service/wellness/daily/im/{}", date);
 
@@ -1561,9 +1561,9 @@ pub async fn blood_pressure(
     profile: Option<String>,
 ) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let end_date = to.unwrap_or_else(|| today.format("%Y-%m-%d").to_string());
     let start_date =
@@ -1657,10 +1657,10 @@ fn classify_bp(systolic: Option<i64>, diastolic: Option<i64>) -> &'static str {
 /// Get hydration data
 pub async fn hydration(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
 
     let path = format!("/usersummary-service/usersummary/hydration/daily/{}", date);
 
@@ -1695,10 +1695,10 @@ pub async fn hydration(date: Option<String>, profile: Option<String>) -> Result<
 /// Get performance summary - all key performance metrics at once
 pub async fn performance_summary(date: Option<String>, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     let date = resolve_date(date)?;
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let display_name = get_display_name(&client, &oauth2).await?;
 
     println!("Performance Summary for {}", date);
@@ -2000,9 +2000,9 @@ pub async fn performance_summary(date: Option<String>, profile: Option<String>) 
 /// Get personal records
 pub async fn personal_records(profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let display_name = get_display_name(&client, &oauth2).await?;
 
     let path = format!(
@@ -2085,9 +2085,9 @@ pub async fn personal_records(profile: Option<String>) -> Result<()> {
 /// Get health insights analyzing sleep/stress correlations
 pub async fn insights(days: u32, profile: Option<String>) -> Result<()> {
     let store = CredentialStore::new(profile)?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let today = Local::now().date_naive();
     let display_name = get_display_name(&client, &oauth2).await?;
 

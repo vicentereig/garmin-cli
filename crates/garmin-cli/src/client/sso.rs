@@ -102,12 +102,11 @@ struct MfaInfo {
 /// SSO Client for Garmin authentication
 pub struct SsoClient {
     client: Client,
-    domain: String,
 }
 
 impl SsoClient {
     /// Create a new SSO client
-    pub fn new(domain: Option<&str>) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let cookie_jar = Arc::new(Jar::default());
         let client = Client::builder()
             .cookie_provider(cookie_jar)
@@ -115,10 +114,7 @@ impl SsoClient {
             .build()
             .map_err(GarminError::Http)?;
 
-        Ok(Self {
-            client,
-            domain: domain.unwrap_or(DEFAULT_DOMAIN).to_string(),
-        })
+        Ok(Self { client })
     }
 
     /// Build SSO page headers (browser-like to establish session cookies)
@@ -168,7 +164,7 @@ impl SsoClient {
         password: &str,
         mfa_callback: Option<impl FnOnce() -> String>,
     ) -> Result<(OAuth1Token, OAuth2Token)> {
-        let service_url = format!("https://mobile.integration.{}/gcm/android", self.domain);
+        let service_url = format!("https://mobile.integration.{}/gcm/android", DEFAULT_DOMAIN);
         let login_params = [
             ("clientId", CLIENT_ID),
             ("locale", "en-US"),
@@ -176,7 +172,7 @@ impl SsoClient {
         ];
 
         // Step 1: Set cookies by visiting the sign-in page
-        let sign_in_url = format!("https://sso.{}/mobile/sso/en/sign-in", self.domain);
+        let sign_in_url = format!("https://sso.{}/mobile/sso/en/sign-in", DEFAULT_DOMAIN);
         let mut headers = Self::sso_page_headers();
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("none"));
 
@@ -192,7 +188,7 @@ impl SsoClient {
             .await;
 
         // Step 2: Submit login via JSON API
-        let login_url = format!("https://sso.{}/mobile/api/login", self.domain);
+        let login_url = format!("https://sso.{}/mobile/api/login", DEFAULT_DOMAIN);
         let login_body = LoginRequest {
             username: email,
             password,
@@ -284,7 +280,7 @@ impl SsoClient {
         mfa_method: &str,
         login_params: &[(&str, &str)],
     ) -> Result<String> {
-        let mfa_url = format!("https://sso.{}/mobile/api/mfa/verifyCode", self.domain);
+        let mfa_url = format!("https://sso.{}/mobile/api/mfa/verifyCode", DEFAULT_DOMAIN);
         let mfa_body = MfaVerifyRequest {
             mfa_method,
             mfa_verification_code: mfa_code,
@@ -332,7 +328,7 @@ impl SsoClient {
     /// Complete login: set Cloudflare LB cookie and exchange for OAuth tokens
     async fn complete_login(&self, ticket: &str) -> Result<(OAuth1Token, OAuth2Token)> {
         // Best-effort: set Cloudflare LB cookie for backend pinning
-        let portal_url = format!("https://sso.{}/portal/sso/embed", self.domain);
+        let portal_url = format!("https://sso.{}/portal/sso/embed", DEFAULT_DOMAIN);
         let mut headers = Self::sso_page_headers();
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-origin"));
         let _ = self.client.get(&portal_url).headers(headers).send().await;
@@ -350,8 +346,8 @@ impl SsoClient {
     async fn get_oauth1_token(&self, ticket: &str) -> Result<OAuth1Token> {
         let consumer = self.fetch_oauth_consumer().await?;
 
-        let base_url = format!("https://connectapi.{}/oauth-service/oauth/", self.domain);
-        let login_url = format!("https://mobile.integration.{}/gcm/android", self.domain);
+        let base_url = format!("https://connectapi.{}/oauth-service/oauth/", DEFAULT_DOMAIN);
+        let login_url = format!("https://mobile.integration.{}/gcm/android", DEFAULT_DOMAIN);
         let url = format!(
             "{}preauthorized?ticket={}&login-url={}&accepts-mfa-tokens=true",
             base_url, ticket, login_url
@@ -399,7 +395,7 @@ impl SsoClient {
             .clone();
         let mfa_token = params.get("mfa_token").cloned();
 
-        let mut token = OAuth1Token::new(oauth_token, oauth_token_secret).with_domain(&self.domain);
+        let mut token = OAuth1Token::new(oauth_token, oauth_token_secret);
 
         if let Some(mfa) = mfa_token {
             token = token.with_mfa(mfa, None);
@@ -418,7 +414,7 @@ impl SsoClient {
 
         let url = format!(
             "https://connectapi.{}/oauth-service/oauth/exchange/user/2.0",
-            self.domain
+            DEFAULT_DOMAIN
         );
 
         let signer = OAuth1Signer::new(OAuthConsumer {
@@ -508,14 +504,8 @@ mod tests {
 
     #[test]
     fn test_sso_client_creation() {
-        let client = SsoClient::new(None);
+        let client = SsoClient::new();
         assert!(client.is_ok());
-    }
-
-    #[test]
-    fn test_sso_client_with_custom_domain() {
-        let client = SsoClient::new(Some("garmin.cn")).unwrap();
-        assert_eq!(client.domain, "garmin.cn");
     }
 
     #[test]

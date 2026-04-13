@@ -27,7 +27,7 @@ pub async fn run(
     force: bool,
 ) -> Result<()> {
     let store = CredentialStore::new(profile.clone())?;
-    let (oauth1, oauth2) = refresh_token(&store).await?;
+    let (_, oauth2) = refresh_token(&store).await?;
 
     // Open storage
     let storage_path = storage_path
@@ -58,7 +58,7 @@ pub async fn run(
     };
 
     // Create sync engine
-    let client = GarminClient::new(&oauth1.domain);
+    let client = GarminClient::new();
     let mut engine = SyncEngine::with_storage(storage, client, oauth2)?;
     engine.run(opts).await?;
 
