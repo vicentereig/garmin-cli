@@ -52,6 +52,8 @@ pub struct OAuth2Token {
     pub refresh_token_expires_in: i64,
     #[serde(default)]
     pub refresh_token_expires_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 impl OAuth2Token {
@@ -63,6 +65,10 @@ impl OAuth2Token {
 
     /// Check if the refresh token has expired.
     pub fn is_refresh_expired(&self) -> bool {
+        if self.refresh_token_expires_at <= 0 {
+            return false;
+        }
+
         let now = Utc::now().timestamp();
         self.refresh_token_expires_at < now
     }
@@ -129,6 +135,7 @@ mod tests {
             expires_at: 0, // Expired (epoch)
             refresh_token_expires_in: 86400,
             refresh_token_expires_at: Utc::now().timestamp() + 86400,
+            client_id: None,
         };
 
         assert!(expired_token.is_expired());
@@ -146,6 +153,7 @@ mod tests {
             expires_at: Utc::now().timestamp() + 3600, // 1 hour from now
             refresh_token_expires_in: 86400,
             refresh_token_expires_at: Utc::now().timestamp() + 86400,
+            client_id: None,
         };
 
         assert!(!valid_token.is_expired());
@@ -162,7 +170,8 @@ mod tests {
             expires_in: 3600,
             expires_at: Utc::now().timestamp() + 3600,
             refresh_token_expires_in: 86400,
-            refresh_token_expires_at: 0, // Refresh token expired
+            refresh_token_expires_at: Utc::now().timestamp() - 1,
+            client_id: None,
         };
 
         assert!(token.is_refresh_expired());
@@ -180,6 +189,7 @@ mod tests {
             expires_at: Utc::now().timestamp() + 3600,
             refresh_token_expires_in: 86400,
             refresh_token_expires_at: Utc::now().timestamp() + 86400,
+            client_id: None,
         };
 
         assert_eq!(token.authorization_header(), "Bearer my_access_token");
@@ -197,11 +207,30 @@ mod tests {
             expires_at: 1700000000,
             refresh_token_expires_in: 86400,
             refresh_token_expires_at: 1700086400,
+            client_id: None,
         };
 
         let json = serde_json::to_string(&token).unwrap();
         let deserialized: OAuth2Token = serde_json::from_str(&json).unwrap();
 
         assert_eq!(token, deserialized);
+    }
+
+    #[test]
+    fn test_oauth2_token_refresh_without_expiry_metadata() {
+        let token = OAuth2Token {
+            scope: "test".to_string(),
+            jti: "jti123".to_string(),
+            token_type: "Bearer".to_string(),
+            access_token: "access123".to_string(),
+            refresh_token: "refresh123".to_string(),
+            expires_in: 3600,
+            expires_at: Utc::now().timestamp() + 3600,
+            refresh_token_expires_in: 0,
+            refresh_token_expires_at: 0,
+            client_id: Some("client-id".to_string()),
+        };
+
+        assert!(!token.is_refresh_expired());
     }
 }
