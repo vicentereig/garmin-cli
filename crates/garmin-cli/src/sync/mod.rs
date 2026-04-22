@@ -2276,6 +2276,7 @@ mod tests {
             expires_at: Utc::now().timestamp() + 3600,
             refresh_token_expires_in: 86400,
             refresh_token_expires_at: Utc::now().timestamp() + 86400,
+            client_id: None,
         }
     }
 

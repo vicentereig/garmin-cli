@@ -12,8 +12,10 @@ use std::path::Path;
 use crate::client::tokens::OAuth2Token;
 use crate::error::{GarminError, Result};
 
-/// User agent for Connect API requests
-const API_USER_AGENT: &str = "GCM-iOS-5.7.2.1";
+/// Native mobile headers for Connect API requests.
+const API_USER_AGENT: &str = "GCM-Android-5.23";
+const X_GARMIN_USER_AGENT: &str =
+    "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; Android/33; Dalvik/2.1.0";
 
 /// Garmin Connect API client
 #[derive(Clone)]
@@ -59,6 +61,13 @@ impl GarminClient {
             AUTHORIZATION,
             HeaderValue::from_str(&token.authorization_header()).unwrap(),
         );
+        headers.insert("X-Garmin-User-Agent", HeaderValue::from_static(X_GARMIN_USER_AGENT));
+        headers.insert("X-Garmin-Paired-App-Version", HeaderValue::from_static("10861"));
+        headers.insert("X-Garmin-Client-Platform", HeaderValue::from_static("Android"));
+        headers.insert("X-App-Ver", HeaderValue::from_static("10861"));
+        headers.insert("X-Lang", HeaderValue::from_static("en"));
+        headers.insert("X-GCExperience", HeaderValue::from_static("GC5"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US,en;q=0.9"));
         headers
     }
 
