@@ -89,28 +89,8 @@ pub async fn download(
 
     let client = GarminClient::new();
 
-    // Build path based on format
-    let (path, extension) = match format.to_lowercase().as_str() {
-        "fit" => (format!("/download-service/files/activity/{}", id), "zip"),
-        "gpx" => (
-            format!("/download-service/export/gpx/activity/{}", id),
-            "gpx",
-        ),
-        "tcx" => (
-            format!("/download-service/export/tcx/activity/{}", id),
-            "tcx",
-        ),
-        "kml" => (
-            format!("/download-service/export/kml/activity/{}", id),
-            "kml",
-        ),
-        _ => {
-            return Err(GarminError::invalid_response(format!(
-                "Unknown format: {}. Supported: fit, gpx, tcx, kml",
-                format
-            )));
-        }
-    };
+    let format = format.to_lowercase();
+    let (path, extension) = download_endpoint(id, &format)?;
 
     println!(
         "Downloading activity {} as {}...",
@@ -132,6 +112,31 @@ pub async fn download(
     println!("Size: {} bytes", bytes.len());
 
     Ok(())
+}
+
+fn download_endpoint(id: u64, format: &str) -> Result<(String, &'static str)> {
+    match format {
+        "fit" => Ok((
+            format!("/download-service/files/activity/{}", id),
+            "fit.zip",
+        )),
+        "gpx" => Ok((
+            format!("/download-service/export/gpx/activity/{}", id),
+            "gpx",
+        )),
+        "tcx" => Ok((
+            format!("/download-service/export/tcx/activity/{}", id),
+            "tcx",
+        )),
+        "kml" => Ok((
+            format!("/download-service/export/kml/activity/{}", id),
+            "kml",
+        )),
+        _ => Err(GarminError::invalid_response(format!(
+            "Unknown format: {}. Supported: fit, gpx, tcx, kml",
+            format
+        ))),
+    }
 }
 
 /// Upload activity file
@@ -203,5 +208,20 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("very long string here", 10), "very lo...");
+    }
+
+    #[test]
+    fn test_download_endpoint_names_garmin_fit_archive() {
+        let (path, extension) = download_endpoint(123, "fit").unwrap();
+
+        assert_eq!(path, "/download-service/files/activity/123");
+        assert_eq!(extension, "fit.zip");
+    }
+
+    #[test]
+    fn test_download_endpoint_rejects_unknown_format() {
+        let err = download_endpoint(123, "csv").unwrap_err();
+
+        assert!(err.to_string().contains("Unknown format: csv"));
     }
 }

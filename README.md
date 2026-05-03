@@ -129,8 +129,8 @@ garmin activities list --limit 20
 # Get activity details
 garmin activities get 21247810009
 
-# Download activity (FIT, GPX, TCX)
-garmin activities download 21247810009 --type fit --output activity.fit
+# Download activity (Garmin FIT archive, GPX, TCX)
+garmin activities download 21247810009 --type fit --output activity.fit.zip
 garmin activities download 21247810009 --type gpx --output activity.gpx
 
 # Upload activity
