@@ -259,7 +259,7 @@ duckdb -c "SELECT date, steps, resting_hr, sleep_seconds/3600.0 as sleep_hours F
 The sync creates several Parquet datasets:
 
 - `activities/*.parquet` - Activity summaries (runs, rides, etc.) - weekly partitions
-- `track_points/*.parquet` - GPS track points - daily partitions
+- `track_points/*.parquet` - GPS track points plus GPX sensor streams (HR, cadence, power, speed when present) - daily partitions
 - `daily_health/*.parquet` - Daily health metrics (sleep, stress, HRV, etc.) - monthly partitions
 - `performance_metrics/*.parquet` - Training data (readiness, VO2 max, race predictions) - monthly partitions
 - `profiles.parquet` - User profile data

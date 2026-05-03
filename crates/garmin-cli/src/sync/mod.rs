@@ -99,6 +99,22 @@ type SleepMetrics = (
     Option<i32>,
 );
 
+#[derive(Debug, Clone, Copy, Default)]
+struct TrackPointStreams {
+    heart_rate: Option<i32>,
+    cadence: Option<i32>,
+    power: Option<i32>,
+    speed: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackPointStreamField {
+    HeartRate,
+    Cadence,
+    Power,
+    Speed,
+}
+
 impl SyncEngine {
     /// Create a new sync engine with default storage location
     pub fn new(client: GarminClient, token: OAuth2Token) -> Result<Self> {
@@ -2010,14 +2026,17 @@ fn parse_gpx(activity_id: i64, gpx_data: &str) -> Result<Vec<TrackPoint>> {
     use gpx::read;
     use std::io::BufReader;
 
+    let gpx_data = gpx_data.trim_start();
     let reader = BufReader::new(gpx_data.as_bytes());
     let gpx = read(reader).map_err(|e| GarminError::invalid_response(e.to_string()))?;
+    let mut streams = parse_gpx_track_point_streams(gpx_data)?.into_iter();
 
     let mut points = Vec::new();
 
     for track in gpx.tracks {
         for segment in track.segments {
             for point in segment.points {
+                let stream = streams.next().unwrap_or_default();
                 let timestamp = point
                     .time
                     .map(|t| {
@@ -2034,16 +2053,103 @@ fn parse_gpx(activity_id: i64, gpx_data: &str) -> Result<Vec<TrackPoint>> {
                     lat: Some(point.point().y()),
                     lon: Some(point.point().x()),
                     elevation: point.elevation,
-                    heart_rate: None,
-                    cadence: None,
-                    power: None,
-                    speed: None,
+                    heart_rate: stream.heart_rate,
+                    cadence: stream.cadence,
+                    power: stream.power,
+                    speed: point.speed.or(stream.speed),
                 });
             }
         }
     }
 
     Ok(points)
+}
+
+fn parse_gpx_track_point_streams(gpx_data: &str) -> Result<Vec<TrackPointStreams>> {
+    use xml::reader::{EventReader, XmlEvent};
+
+    let parser = EventReader::from_str(gpx_data);
+    let mut streams = Vec::new();
+    let mut current_point: Option<TrackPointStreams> = None;
+    let mut current_field: Option<TrackPointStreamField> = None;
+    let mut current_text = String::new();
+
+    for event in parser {
+        match event.map_err(|e| GarminError::invalid_response(e.to_string()))? {
+            XmlEvent::StartElement { name, .. } => {
+                if name.local_name == "trkpt" {
+                    current_point = Some(TrackPointStreams::default());
+                    current_field = None;
+                    current_text.clear();
+                } else if current_point.is_some() {
+                    if let Some(field) = track_point_stream_field(&name.local_name) {
+                        current_field = Some(field);
+                        current_text.clear();
+                    }
+                }
+            }
+            XmlEvent::Characters(text) | XmlEvent::CData(text) => {
+                if current_field.is_some() {
+                    current_text.push_str(&text);
+                }
+            }
+            XmlEvent::EndElement { name } => {
+                if name.local_name == "trkpt" {
+                    streams.push(current_point.take().unwrap_or_default());
+                    current_field = None;
+                    current_text.clear();
+                } else if let (Some(field), Some(point)) = (current_field, current_point.as_mut()) {
+                    if track_point_stream_field(&name.local_name) == Some(field) {
+                        apply_track_point_stream_field(point, field, &current_text);
+                        current_field = None;
+                        current_text.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(streams)
+}
+
+fn track_point_stream_field(local_name: &str) -> Option<TrackPointStreamField> {
+    match local_name.to_ascii_lowercase().as_str() {
+        "hr" | "heartrate" | "heart_rate" | "heartratebpm" => {
+            Some(TrackPointStreamField::HeartRate)
+        }
+        "cad" | "cadence" => Some(TrackPointStreamField::Cadence),
+        "power" | "powerinwatts" | "watts" => Some(TrackPointStreamField::Power),
+        "speed" => Some(TrackPointStreamField::Speed),
+        _ => None,
+    }
+}
+
+fn apply_track_point_stream_field(
+    point: &mut TrackPointStreams,
+    field: TrackPointStreamField,
+    value: &str,
+) {
+    match field {
+        TrackPointStreamField::HeartRate => point.heart_rate = parse_i32_stream_value(value),
+        TrackPointStreamField::Cadence => point.cadence = parse_i32_stream_value(value),
+        TrackPointStreamField::Power => point.power = parse_i32_stream_value(value),
+        TrackPointStreamField::Speed => point.speed = parse_f64_stream_value(value),
+    }
+}
+
+fn parse_i32_stream_value(value: &str) -> Option<i32> {
+    let value = value.trim().parse::<f64>().ok()?;
+    if value.is_finite() && value >= i32::MIN as f64 && value <= i32::MAX as f64 {
+        Some(value.round() as i32)
+    } else {
+        None
+    }
+}
+
+fn parse_f64_stream_value(value: &str) -> Option<f64> {
+    let value = value.trim().parse::<f64>().ok()?;
+    value.is_finite().then_some(value)
 }
 
 /// Consumer loop: receives data from channel and writes to Parquet
@@ -2488,6 +2594,58 @@ mod tests {
         assert_eq!(weekly_avg, Some(60));
         assert_eq!(last_night, Some(58));
         assert_eq!(status.as_deref(), Some("BALANCED"));
+    }
+
+    #[test]
+    fn test_parse_gpx_reads_track_point_extension_streams() {
+        let gpx_data = r#"
+            <?xml version="1.0" encoding="UTF-8"?>
+            <gpx creator="Garmin Connect" version="1.1"
+              xmlns="http://www.topografix.com/GPX/1/1"
+              xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
+              xmlns:gpxpx="http://www.garmin.com/xmlschemas/PowerExtension/v1">
+              <trk>
+                <trkseg>
+                  <trkpt lat="37.0" lon="-122.0">
+                    <ele>10.5</ele>
+                    <time>2025-01-03T07:00:00Z</time>
+                    <extensions>
+                      <gpxtpx:TrackPointExtension>
+                        <gpxtpx:hr>150</gpxtpx:hr>
+                        <gpxtpx:cad>88</gpxtpx:cad>
+                        <gpxtpx:speed>3.25</gpxtpx:speed>
+                      </gpxtpx:TrackPointExtension>
+                      <gpxpx:PowerExtension>
+                        <gpxpx:PowerInWatts>245</gpxpx:PowerInWatts>
+                      </gpxpx:PowerExtension>
+                    </extensions>
+                  </trkpt>
+                  <trkpt lat="37.1" lon="-122.1">
+                    <ele>11.0</ele>
+                    <time>2025-01-03T07:00:01Z</time>
+                    <extensions>
+                      <gpxtpx:TrackPointExtension>
+                        <gpxtpx:hr>151</gpxtpx:hr>
+                      </gpxtpx:TrackPointExtension>
+                    </extensions>
+                  </trkpt>
+                </trkseg>
+              </trk>
+            </gpx>
+        "#;
+
+        let points = parse_gpx(42, gpx_data).unwrap();
+
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].activity_id, 42);
+        assert_eq!(points[0].heart_rate, Some(150));
+        assert_eq!(points[0].cadence, Some(88));
+        assert_eq!(points[0].power, Some(245));
+        assert_eq!(points[0].speed, Some(3.25));
+        assert_eq!(points[1].heart_rate, Some(151));
+        assert_eq!(points[1].cadence, None);
+        assert_eq!(points[1].power, None);
+        assert_eq!(points[1].speed, None);
     }
 
     #[tokio::test]

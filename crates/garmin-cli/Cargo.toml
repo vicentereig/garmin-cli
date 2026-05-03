@@ -61,6 +61,7 @@ parquet.workspace = true
 gpx.workspace = true
 geo.workspace = true
 wkt.workspace = true
+xml-rs.workspace = true
 
 # Concurrency
 dashmap.workspace = true

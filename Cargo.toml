@@ -59,6 +59,7 @@ parquet = { version = "54", default-features = false, features = ["arrow", "snap
 gpx = "0.10"
 geo = "0.28"
 wkt = "0.11"
+xml-rs = "0.8"
 
 # Testing
 wiremock = "0.6"
