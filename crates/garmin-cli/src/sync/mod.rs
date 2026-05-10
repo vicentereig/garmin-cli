@@ -2088,10 +2088,8 @@ fn parse_gpx_track_point_streams(gpx_data: &str) -> Result<Vec<TrackPointStreams
                     }
                 }
             }
-            XmlEvent::Characters(text) | XmlEvent::CData(text) => {
-                if current_field.is_some() {
-                    current_text.push_str(&text);
-                }
+            XmlEvent::Characters(text) | XmlEvent::CData(text) if current_field.is_some() => {
+                current_text.push_str(&text);
             }
             XmlEvent::EndElement { name } => {
                 if name.local_name == "trkpt" {
