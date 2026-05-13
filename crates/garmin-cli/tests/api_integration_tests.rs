@@ -20,6 +20,7 @@ fn test_token() -> OAuth2Token {
         expires_at: chrono::Utc::now().timestamp() + 3600,
         refresh_token_expires_in: 86400,
         refresh_token_expires_at: chrono::Utc::now().timestamp() + 86400,
+        client_id: None,
     }
 }
 

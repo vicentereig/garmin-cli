@@ -125,7 +125,7 @@ pub async fn refresh_token(store: &CredentialStore) -> Result<(OAuth1Token, OAut
 
     println!("Refreshing access token...");
     let sso_client = SsoClient::new()?;
-    let new_oauth2 = sso_client.refresh_oauth2(&oauth1).await?;
+    let new_oauth2 = sso_client.refresh_oauth2(&oauth1, &oauth2).await?;
 
     store.save_oauth2(&new_oauth2)?;
 
