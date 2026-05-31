@@ -77,6 +77,61 @@ pub async fn get(id: u64, profile: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Print an activity's note. Garmin's mobile app calls this a "note"; the API
+/// stores it as the top-level `description` field. Prints only the note text to
+/// stdout (script-friendly), or nothing when no note is set.
+pub async fn note_get(id: u64, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (_, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new();
+    let path = format!("/activity-service/activity/{}", id);
+
+    let activity: serde_json::Value = client.get_json(&oauth2, &path).await?;
+
+    if let Some(note) = activity.get("description").and_then(|v| v.as_str()) {
+        let note = note.trim();
+        if !note.is_empty() {
+            println!("{}", note);
+        }
+    }
+
+    Ok(())
+}
+
+/// Set an activity's note (Garmin activity `description`).
+pub async fn note_set(id: u64, note: &str, profile: Option<String>) -> Result<()> {
+    set_description(id, note, profile).await
+}
+
+/// Clear an activity's note (Garmin activity `description`).
+pub async fn note_clear(id: u64, profile: Option<String>) -> Result<()> {
+    set_description(id, "", profile).await
+}
+
+/// PUT the activity description. An empty string clears the note.
+async fn set_description(id: u64, description: &str, profile: Option<String>) -> Result<()> {
+    let store = CredentialStore::new(profile)?;
+    let (_, oauth2) = refresh_token(&store).await?;
+
+    let client = GarminClient::new();
+    let path = format!("/activity-service/activity/{}", id);
+    let body = serde_json::json!({
+        "activityId": id,
+        "description": description,
+    });
+
+    client.put_json(&oauth2, &path, &body).await?;
+
+    if description.is_empty() {
+        println!("Cleared note for activity {}.", id);
+    } else {
+        println!("Updated note for activity {}.", id);
+    }
+
+    Ok(())
+}
+
 /// Download activity file
 pub async fn download(
     id: u64,
