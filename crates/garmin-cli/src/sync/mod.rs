@@ -1959,15 +1959,15 @@ fn parse_activity(activity: &serde_json::Value, profile_id: i32) -> Result<Activ
         distance_m: activity.get("distance").and_then(|v| v.as_f64()),
         calories: activity
             .get("calories")
-            .and_then(|v| v.as_i64())
+            .and_then(|v| v.as_f64())
             .map(|v| v as i32),
         avg_hr: activity
             .get("averageHR")
-            .and_then(|v| v.as_i64())
+            .and_then(|v| v.as_f64())
             .map(|v| v as i32),
         max_hr: activity
             .get("maxHR")
-            .and_then(|v| v.as_i64())
+            .and_then(|v| v.as_f64())
             .map(|v| v as i32),
         avg_speed: activity.get("averageSpeed").and_then(|v| v.as_f64()),
         max_speed: activity.get("maxSpeed").and_then(|v| v.as_f64()),
