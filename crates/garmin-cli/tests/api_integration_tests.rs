@@ -143,6 +143,34 @@ mod sleep_tests {
     }
 
     #[tokio::test]
+    async fn test_sleep_user_note_parsing() {
+        let mock_server = MockServer::start().await;
+        let fixture = include_str!("fixtures/sleep_2025-12-04.json");
+
+        Mock::given(method("GET"))
+            .and(path("/wellness-service/wellness/dailySleepData/TestUser"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result: serde_json::Value = client
+            .get_json(
+                &token,
+                "/wellness-service/wellness/dailySleepData/TestUser?date=2025-12-04",
+            )
+            .await
+            .expect("Failed to get sleep data");
+
+        // The subjective note added in the Garmin mobile app is read from
+        // dailySleepDTO.userNote and surfaced in the sleep summary.
+        let note = result["dailySleepDTO"]["userNote"].as_str().unwrap();
+        assert_eq!(note, "Late caffeine, restless night.");
+    }
+
+    #[tokio::test]
     async fn test_sleep_total_calculation() {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/sleep_2025-12-04.json")).unwrap();
