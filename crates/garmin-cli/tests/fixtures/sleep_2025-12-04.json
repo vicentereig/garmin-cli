@@ -27,7 +27,8 @@
       }
     },
     "sleepStartTimestampGMT": 1733270400000,
-    "sleepEndTimestampGMT": 1733302320000
+    "sleepEndTimestampGMT": 1733302320000,
+    "userNote": "Late caffeine, restless night."
   },
   "avgOvernightHrv": 58.0,
   "bodyBatteryChange": 55

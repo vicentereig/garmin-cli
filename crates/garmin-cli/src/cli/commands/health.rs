@@ -1140,6 +1140,14 @@ fn print_sleep_summary(data: &serde_json::Value) {
     {
         println!("Sleep Score:  {}", score);
     }
+
+    // Subjective note added in the Garmin mobile app, when present
+    if let Some(note) = data.get("userNote").and_then(|v| v.as_str()) {
+        let note = note.trim();
+        if !note.is_empty() {
+            println!("User Note:    {}", note);
+        }
+    }
 }
 
 /// Get lactate threshold data
