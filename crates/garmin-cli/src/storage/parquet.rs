@@ -786,6 +786,7 @@ impl ParquetStore {
             .iter()
             .map(|r| r.raw_json.as_ref().map(|j| j.to_string()))
             .collect();
+        let sleep_note: StringArray = records.iter().map(|r| r.sleep_note.as_deref()).collect();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, true),
@@ -816,6 +817,7 @@ impl ParquetStore {
             Field::new("moderate_intensity_min", DataType::Int32, true),
             Field::new("vigorous_intensity_min", DataType::Int32, true),
             Field::new("raw_json", DataType::Utf8, true),
+            Field::new("sleep_note", DataType::Utf8, true),
         ]));
 
         RecordBatch::try_new(
@@ -849,6 +851,7 @@ impl ParquetStore {
                 Arc::new(moderate_intensity_min),
                 Arc::new(vigorous_intensity_min),
                 Arc::new(raw_json),
+                Arc::new(sleep_note),
             ],
         )
         .map_err(|e| GarminError::Database(format!("Failed to create record batch: {}", e)))
@@ -998,6 +1001,11 @@ impl ParquetStore {
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
+        // Looked up by name for backward compatibility: Parquet files written
+        // before this column existed simply yield None.
+        let sleep_note = batch
+            .column_by_name("sleep_note")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
         let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
 
@@ -1025,6 +1033,8 @@ impl ParquetStore {
                     .is_valid(i)
                     .then(|| rem_sleep_seconds.value(i)),
                 sleep_score: sleep_score.is_valid(i).then(|| sleep_score.value(i)),
+                sleep_note: sleep_note
+                    .and_then(|arr| arr.is_valid(i).then(|| arr.value(i).to_string())),
                 avg_stress: avg_stress.is_valid(i).then(|| avg_stress.value(i)),
                 max_stress: max_stress.is_valid(i).then(|| max_stress.value(i)),
                 body_battery_start: body_battery_start
@@ -1933,6 +1943,7 @@ mod tests {
             light_sleep_seconds: Some(14400),
             rem_sleep_seconds: Some(7200),
             sleep_score: Some(85),
+            sleep_note: Some("Felt rested.".to_string()),
             avg_stress: Some(30),
             max_stress: Some(75),
             body_battery_start: Some(95),
@@ -1958,6 +1969,7 @@ mod tests {
 
         assert_eq!(read_back.len(), 1);
         assert_eq!(read_back[0].steps, Some(10000));
+        assert_eq!(read_back[0].sleep_note.as_deref(), Some("Felt rested."));
         assert_eq!(
             read_back[0].date,
             NaiveDate::from_ymd_opt(2024, 12, 15).unwrap()
@@ -1987,6 +1999,7 @@ mod tests {
             light_sleep_seconds: None,
             rem_sleep_seconds: None,
             sleep_score: None,
+            sleep_note: None,
             avg_stress: None,
             max_stress: None,
             body_battery_start: None,

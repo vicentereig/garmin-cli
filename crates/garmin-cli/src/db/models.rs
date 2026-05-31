@@ -79,6 +79,8 @@ pub struct DailyHealth {
     pub light_sleep_seconds: Option<i32>,
     pub rem_sleep_seconds: Option<i32>,
     pub sleep_score: Option<i32>,
+    /// Subjective sleep note added in the Garmin mobile app (dailySleepDTO.userNote)
+    pub sleep_note: Option<String>,
     pub avg_stress: Option<i32>,
     pub max_stress: Option<i32>,
     pub body_battery_start: Option<i32>,

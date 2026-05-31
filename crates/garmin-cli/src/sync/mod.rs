@@ -1455,6 +1455,17 @@ fn parse_sleep_metrics(value: Option<&serde_json::Value>) -> SleepMetrics {
     (total, deep, light, rem, score)
 }
 
+/// Extract the subjective sleep note (dailySleepDTO.userNote) added in the
+/// Garmin mobile app. Returns None when absent or empty after trimming.
+fn parse_sleep_note(value: Option<&serde_json::Value>) -> Option<String> {
+    let dto = value.and_then(|v| v.get("dailySleepDTO")).or(value)?;
+    dto.get("userNote")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 fn parse_hrv_metrics(
     value: Option<&serde_json::Value>,
 ) -> (Option<i32>, Option<i32>, Option<String>) {
@@ -1726,6 +1737,7 @@ async fn fetch_task_data(
 
             let (sleep_total, deep_sleep, light_sleep, rem_sleep, sleep_score) =
                 parse_sleep_metrics(sleep_data.as_ref());
+            let sleep_note = parse_sleep_note(sleep_data.as_ref());
             let (hrv_weekly_avg, hrv_last_night, hrv_status) = parse_hrv_metrics(hrv_data.as_ref());
 
             let record = DailyHealth {
@@ -1766,6 +1778,7 @@ async fn fetch_task_data(
                 light_sleep_seconds: light_sleep,
                 rem_sleep_seconds: rem_sleep,
                 sleep_score,
+                sleep_note,
                 avg_stress: health
                     .get("averageStressLevel")
                     .and_then(|v| v.as_i64())
@@ -2344,6 +2357,7 @@ mod tests {
             light_sleep_seconds: None,
             rem_sleep_seconds: None,
             sleep_score: None,
+            sleep_note: None,
             avg_stress: None,
             max_stress: None,
             body_battery_start: None,
@@ -2517,6 +2531,10 @@ mod tests {
                 assert_eq!(record.light_sleep_seconds, Some(15300));
                 assert_eq!(record.rem_sleep_seconds, Some(8520));
                 assert_eq!(record.sleep_score, Some(88));
+                assert_eq!(
+                    record.sleep_note.as_deref(),
+                    Some("Late caffeine, restless night.")
+                );
                 assert_eq!(record.hrv_weekly_avg, Some(65));
                 assert_eq!(record.hrv_last_night, Some(68));
                 assert_eq!(record.hrv_status.as_deref(), Some("BALANCED"));
