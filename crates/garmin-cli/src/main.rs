@@ -93,6 +93,32 @@ enum ActivityCommands {
         /// File path to upload
         file: String,
     },
+    /// Read or edit an activity note (maps to the Garmin activity `description`)
+    Note {
+        #[command(subcommand)]
+        command: NoteCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoteCommands {
+    /// Print an activity's note
+    Get {
+        /// Activity ID
+        id: u64,
+    },
+    /// Set an activity's note
+    Set {
+        /// Activity ID
+        id: u64,
+        /// Note text
+        note: String,
+    },
+    /// Clear an activity's note
+    Clear {
+        /// Activity ID
+        id: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -374,6 +400,13 @@ async fn main() -> garmin_cli::Result<()> {
             ActivityCommands::Upload { file } => {
                 commands::upload_activity(&file, cli.profile).await
             }
+            ActivityCommands::Note { command } => match command {
+                NoteCommands::Get { id } => commands::activity_note_get(id, cli.profile).await,
+                NoteCommands::Set { id, note } => {
+                    commands::activity_note_set(id, &note, cli.profile).await
+                }
+                NoteCommands::Clear { id } => commands::activity_note_clear(id, cli.profile).await,
+            },
         },
         Commands::Health { command } => match command {
             HealthCommands::Summary { date } => commands::summary(date, cli.profile).await,

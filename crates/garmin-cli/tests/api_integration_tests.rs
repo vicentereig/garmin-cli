@@ -1393,3 +1393,102 @@ mod error_handling_tests {
         assert!(result.is_err());
     }
 }
+
+mod activity_note_tests {
+    use super::*;
+    use wiremock::matchers::body_json;
+
+    // Activity notes are read from / written to the top-level `description`
+    // field on /activity-service/activity/{id}. Verified against a real Garmin
+    // Connect activity note created in the mobile app.
+
+    #[tokio::test]
+    async fn test_get_activity_description() {
+        let mock_server = MockServer::start().await;
+        let body = serde_json::json!({
+            "activityId": 22987587132u64,
+            "description": "War e-bike was ich mir geliehen hatte."
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/activity-service/activity/22987587132"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let activity: serde_json::Value = client
+            .get_json(&token, "/activity-service/activity/22987587132")
+            .await
+            .expect("GET should succeed");
+
+        assert_eq!(
+            activity["description"].as_str(),
+            Some("War e-bike was ich mir geliehen hatte.")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_put_activity_note_sends_description() {
+        let mock_server = MockServer::start().await;
+        let expected_body = serde_json::json!({
+            "activityId": 22987587132u64,
+            "description": "Felt controlled; left calf slightly tight."
+        });
+
+        Mock::given(method("PUT"))
+            .and(path("/activity-service/activity/22987587132"))
+            .and(header("Authorization", "Bearer test-access-token"))
+            .and(body_json(&expected_body))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        // An empty (204) response body is treated as success and yields Null.
+        let result = client
+            .put_json(
+                &token,
+                "/activity-service/activity/22987587132",
+                &expected_body,
+            )
+            .await
+            .expect("PUT should succeed");
+
+        assert!(result.is_null());
+    }
+
+    #[tokio::test]
+    async fn test_clear_activity_note_sends_empty_description() {
+        let mock_server = MockServer::start().await;
+        let expected_body = serde_json::json!({
+            "activityId": 22987587132u64,
+            "description": ""
+        });
+
+        Mock::given(method("PUT"))
+            .and(path("/activity-service/activity/22987587132"))
+            .and(body_json(&expected_body))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&mock_server)
+            .await;
+
+        let client = test_client(&mock_server);
+        let token = test_token();
+
+        let result = client
+            .put_json(
+                &token,
+                "/activity-service/activity/22987587132",
+                &expected_body,
+            )
+            .await
+            .expect("clear should succeed");
+
+        assert!(result.is_null());
+    }
+}

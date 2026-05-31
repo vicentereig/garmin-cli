@@ -8,7 +8,8 @@ pub mod weight;
 
 pub use activities::{
     download as download_activity, get as get_activity, list as list_activities,
-    upload as upload_activity,
+    note_clear as activity_note_clear, note_get as activity_note_get,
+    note_set as activity_note_set, upload as upload_activity,
 };
 pub use auth::{login, logout, status};
 pub use devices::{get as get_device, history as device_history, list as list_devices};
