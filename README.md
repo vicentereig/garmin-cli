@@ -129,6 +129,11 @@ garmin activities list --limit 20
 # Get activity details
 garmin activities get 21247810009
 
+# Read or edit activity notes
+garmin activities note get 21247810009
+garmin activities note set 21247810009 "Felt controlled; left calf slightly tight."
+garmin activities note clear 21247810009
+
 # Download activity (Garmin FIT archive, GPX, TCX)
 garmin activities download 21247810009 --type fit --output activity.fit.zip
 garmin activities download 21247810009 --type gpx --output activity.gpx
