@@ -1,11 +1,13 @@
 //! Device commands for garmin-cli
 
-use duckdb::Connection;
+use std::collections::HashMap;
 
 use crate::client::GarminClient;
 use crate::config::CredentialStore;
+use crate::db::models::Activity;
 use crate::error::Result;
 use crate::storage::default_storage_path;
+use crate::storage::ParquetStore;
 
 use super::auth::refresh_token;
 
@@ -108,50 +110,8 @@ pub async fn history(storage_path: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    // Use DuckDB to query Parquet files with glob pattern
-    let conn =
-        Connection::open_in_memory().map_err(|e| crate::GarminError::Database(e.to_string()))?;
-
-    let glob_pattern = format!("{}/*.parquet", activities_path.display());
-
-    // Query unique devices from activity metadata
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT
-                json_extract_string(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceId') as device_id,
-                json_extract(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceTypePk') as device_type,
-                MIN(start_time_local) as first_activity,
-                MAX(start_time_local) as last_activity,
-                COUNT(*) as activity_count
-            FROM '{}'
-            WHERE raw_json IS NOT NULL
-              AND json_extract_string(raw_json, '$.metadataDTO.deviceMetaDataDTO.deviceId') IS NOT NULL
-            GROUP BY 1, 2
-            ORDER BY first_activity",
-            glob_pattern
-        ))
-        .map_err(|e| crate::GarminError::Database(e.to_string()))?;
-
-    #[allow(clippy::type_complexity)]
-    let devices: Vec<(
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        i64,
-    )> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })
-        .map_err(|e| crate::GarminError::Database(e.to_string()))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let store = ParquetStore::new(&storage_path);
+    let mut devices = collect_device_history(store.read_activities()?);
 
     if devices.is_empty() {
         println!("No device history found in synced activities.");
@@ -166,27 +126,23 @@ pub async fn history(storage_path: Option<String>) -> Result<()> {
     );
     println!("{}", "-".repeat(65));
 
-    for (device_id, device_type, first, last, count) in &devices {
-        let device_id_str = device_id.as_deref().unwrap_or("-");
-        let device_type_str = device_type
-            .map(|t| t.to_string())
+    devices.sort_by_key(|device| device.first_activity);
+
+    for device in &devices {
+        let device_type_str = device
+            .device_type
+            .map(|device_type| device_type.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let first_date = first
-            .as_ref()
-            .and_then(|s| s.split(' ').next())
-            .unwrap_or("-");
-        let last_date = last
-            .as_ref()
-            .and_then(|s| s.split(' ').next())
-            .unwrap_or("-");
+        let first_date = device.first_activity.date_naive().to_string();
+        let last_date = device.last_activity.date_naive().to_string();
 
         println!(
             "{:<15} {:<12} {:<12} {:<12} {:>10}",
-            truncate(device_id_str, 14),
+            truncate(&device.device_id, 14),
             truncate(&device_type_str, 11),
             first_date,
             last_date,
-            count
+            device.activity_count
         );
     }
 
@@ -197,4 +153,66 @@ pub async fn history(storage_path: Option<String>) -> Result<()> {
     println!("Common types: 37010=Forerunner 955, 30380=Edge 810, etc.");
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct DeviceHistory {
+    device_id: String,
+    device_type: Option<i64>,
+    first_activity: chrono::DateTime<chrono::Utc>,
+    last_activity: chrono::DateTime<chrono::Utc>,
+    activity_count: usize,
+}
+
+fn collect_device_history(activities: Vec<Activity>) -> Vec<DeviceHistory> {
+    let mut devices: HashMap<(String, Option<i64>), DeviceHistory> = HashMap::new();
+
+    for activity in activities {
+        let Some(start_time) = activity.start_time_local else {
+            continue;
+        };
+        let Some((device_id, device_type)) = activity_device_metadata(&activity) else {
+            continue;
+        };
+
+        let entry = devices
+            .entry((device_id.clone(), device_type))
+            .or_insert_with(|| DeviceHistory {
+                device_id,
+                device_type,
+                first_activity: start_time,
+                last_activity: start_time,
+                activity_count: 0,
+            });
+
+        entry.first_activity = entry.first_activity.min(start_time);
+        entry.last_activity = entry.last_activity.max(start_time);
+        entry.activity_count += 1;
+    }
+
+    devices.into_values().collect()
+}
+
+fn activity_device_metadata(activity: &Activity) -> Option<(String, Option<i64>)> {
+    let metadata = activity
+        .raw_json
+        .as_ref()?
+        .get("metadataDTO")?
+        .get("deviceMetaDataDTO")?;
+
+    let device_id = metadata.get("deviceId").and_then(json_value_to_string)?;
+    let device_type = metadata.get("deviceTypePk").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+    });
+
+    Some((device_id, device_type))
+}
+
+fn json_value_to_string(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|number| number.to_string()))
 }

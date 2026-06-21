@@ -307,6 +307,34 @@ impl ParquetStore {
         Ok(activities)
     }
 
+    /// Read activities from all activity partitions.
+    pub fn read_activities(&self) -> Result<Vec<Activity>> {
+        let dir = self.base_path.join(EntityType::Activities.dir_name());
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut activities = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|e| {
+            GarminError::Database(format!(
+                "Failed to read activity directory {:?}: {}",
+                dir, e
+            ))
+        })? {
+            let path = entry
+                .map_err(|e| {
+                    GarminError::Database(format!("Failed to read activity entry: {}", e))
+                })?
+                .path();
+
+            if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+                activities.extend(self.read_activities_from_path(&path)?);
+            }
+        }
+
+        Ok(activities)
+    }
+
     fn activities_to_batch(activities: Vec<&Activity>) -> Result<RecordBatch> {
         let activity_id: Int64Array = activities.iter().map(|a| a.activity_id).collect();
         let profile_id: Int32Array = activities.iter().map(|a| a.profile_id).collect();
@@ -2156,9 +2184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duckdb_glob_query() {
-        use duckdb::Connection;
-
+    fn test_read_activities_from_all_partitions() {
         let temp = TempDir::new().unwrap();
         let store = ParquetStore::new(temp.path());
 
@@ -2229,24 +2255,18 @@ mod tests {
         ];
         store.upsert_activities(&activities).unwrap();
 
-        // Use DuckDB to query all Parquet files with glob pattern
-        let conn = Connection::open_in_memory().unwrap();
-        let glob_pattern = format!("{}/*.parquet", temp.path().join("activities").display());
-
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT activity_id, activity_name FROM '{}' ORDER BY activity_id",
-                glob_pattern
-            ))
-            .unwrap();
-
-        let results: Vec<(i64, String)> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
+        let mut results: Vec<(i64, String)> = store
+            .read_activities()
             .unwrap()
-            .filter_map(|r| r.ok())
+            .into_iter()
+            .map(|activity| {
+                (
+                    activity.activity_id,
+                    activity.activity_name.unwrap_or_default(),
+                )
+            })
             .collect();
+        results.sort_by_key(|(activity_id, _)| *activity_id);
 
         // Should see both activities from different partitions
         assert_eq!(results.len(), 2);
