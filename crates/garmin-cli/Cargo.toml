@@ -50,7 +50,6 @@ urlencoding.workspace = true
 rpassword.workspace = true
 
 # Database
-duckdb.workspace = true
 rusqlite.workspace = true
 
 # Parquet/Arrow
