@@ -1,12 +1,12 @@
 //! Sync commands for garmin-cli
 
-use chrono::NaiveDate;
-use std::path::Path;
+use chrono::{NaiveDate, Utc};
+use std::path::{Path, PathBuf};
 
-use crate::client::GarminClient;
+use crate::client::{GarminClient, RequestLogger};
 use crate::config::CredentialStore;
 use crate::db::models::SyncTaskType;
-use crate::error::Result;
+use crate::error::{GarminError, Result};
 use crate::storage::{default_storage_path, Storage, SyncDb};
 use crate::sync::progress::SyncMode;
 use crate::sync::{SyncEngine, SyncOptions, TaskQueue};
@@ -26,6 +26,8 @@ pub async fn run(
     dry_run: bool,
     backfill: bool,
     force: bool,
+    log: Option<String>,
+    verbose: bool,
 ) -> Result<()> {
     let store = CredentialStore::new(profile.clone())?;
     let (_, oauth2) = refresh_token(&store).await?;
@@ -56,10 +58,18 @@ pub async fn run(
         force,
         concurrency: 4,
         mode,
+        logger: None,
     };
 
+    let (logger, log_path) = create_sync_logger(log, verbose)?;
+    if let Some(path) = &log_path {
+        println!("Writing sync log: {}", path.display());
+    }
+    let mut opts = opts;
+    opts.logger = logger.clone();
+
     // Create sync engine
-    let client = GarminClient::new();
+    let client = GarminClient::new().with_logger(logger);
     let mut engine = SyncEngine::with_storage(storage, client, oauth2)?;
     engine.run(opts).await?;
 
@@ -124,12 +134,16 @@ pub async fn status(profile: Option<String>, storage_path: Option<String>) -> Re
     let track_files = count_partition_files(&storage_path, "track_points");
 
     // Get task status counts
-    let (pending_count, in_progress_count, completed_count, failed_count) =
-        if let Some(pid) = profile_id {
-            sync_db.count_tasks_by_status(pid)?
-        } else {
-            (0, 0, 0, 0)
-        };
+    let (pending, in_progress, completed, failed) = if let Some(pid) = profile_id {
+        sync_db.count_tasks_by_status(pid)?
+    } else {
+        (0, 0, 0, 0)
+    };
+    let active_tasks = if let Some(pid) = profile_id {
+        sync_db.list_in_progress_tasks(pid)?
+    } else {
+        Vec::new()
+    };
 
     println!("Storage: {}", storage_path.display());
     println!("Profile: {}", profile_name);
@@ -145,30 +159,37 @@ pub async fn status(profile: Option<String>, storage_path: Option<String>) -> Re
     println!();
     if profile_id.is_some() {
         println!("Sync tasks:");
-        println!("  Pending:     {:>4}", pending_count);
-        println!("  In progress: {:>4}", in_progress_count);
-        println!("  Failed:      {:>4}", failed_count);
-        println!("  Completed:   {:>4}", completed_count);
+        println!("  Pending:     {:>4}", pending);
+        println!("  In progress: {:>4}", in_progress);
+        println!("  Failed:      {:>4}", failed);
+        println!("  Completed:   {:>4}", completed);
     }
-    if let Some(pid) = profile_id {
-        if in_progress_count > 0 {
-            let active_tasks = sync_db.list_in_progress_tasks(pid)?;
-            println!();
-            println!("Active tasks:");
-            for task in active_tasks {
-                let started_at = task
-                    .in_progress_at
-                    .map(|dt| dt.to_rfc3339())
-                    .unwrap_or_else(|| "unknown".to_string());
-                println!(
-                    "  #{} [{}] attempt {} started {} - {}",
-                    task.id,
-                    task.pipeline,
-                    task.attempts,
-                    started_at,
-                    format_sync_task_type(&task.task_type)
-                );
-            }
+
+    if !active_tasks.is_empty() {
+        println!();
+        println!("Active tasks:");
+        for task in active_tasks {
+            let elapsed = task
+                .in_progress_at
+                .map(|started| {
+                    let seconds = (Utc::now() - started).num_seconds().max(0) as u64;
+                    format_elapsed(seconds)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let last_error = task
+                .last_error
+                .as_deref()
+                .map(|error| format!("; last error: {}", error))
+                .unwrap_or_default();
+            println!(
+                "  #{} [{}] {} for {} (attempt {}{})",
+                task.id,
+                task.pipeline,
+                task_description(&task.task_type),
+                elapsed,
+                task.attempts,
+                last_error
+            );
         }
     }
 
@@ -191,47 +212,101 @@ fn count_partition_files(storage_path: &Path, dirname: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn format_sync_task_type(task_type: &SyncTaskType) -> String {
+fn task_description(task_type: &SyncTaskType) -> String {
     match task_type {
-        SyncTaskType::Activities {
-            start,
-            limit,
-            min_date,
-            max_date,
-        } => {
-            let mut desc = format!("activities page start={} limit={}", start, limit);
-            if let Some(min_date) = min_date {
-                desc.push_str(&format!(" from={}", min_date));
-            }
-            if let Some(max_date) = max_date {
-                desc.push_str(&format!(" to={}", max_date));
-            }
-            desc
-        }
-        SyncTaskType::ActivityDetail { activity_id } => {
-            format!("activity detail activity_id={}", activity_id)
+        SyncTaskType::Activities { start, limit, .. } => {
+            format!("Activities {}-{}", start, start + limit)
         }
         SyncTaskType::DownloadGpx {
             activity_id,
             activity_name,
             activity_date,
         } => {
-            let mut desc = format!("download GPX activity_id={}", activity_id);
-            if let Some(activity_date) = activity_date {
-                desc.push_str(&format!(" date={}", activity_date));
-            }
-            if let Some(activity_name) = activity_name {
-                desc.push_str(&format!(" name=\"{}\"", activity_name));
-            }
-            desc
+            let name = activity_name
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| activity_id.to_string());
+            activity_date
+                .as_deref()
+                .map(|date| format!("GPX {} {}", date, name))
+                .unwrap_or_else(|| format!("GPX {}", name))
         }
-        SyncTaskType::DailyHealth { date } => format!("daily health date={}", date),
-        SyncTaskType::Performance { date } => format!("performance date={}", date),
-        SyncTaskType::Weight { from, to } => format!("weight from={} to={}", from, to),
+        SyncTaskType::DailyHealth { date } => format!("Health {}", date),
+        SyncTaskType::Performance { date } => format!("Performance {}", date),
+        SyncTaskType::ActivityDetail { activity_id } => format!("Activity detail {}", activity_id),
+        SyncTaskType::Weight { from, to } => format!("Weight {} -> {}", from, to),
         SyncTaskType::GenerateEmbeddings { activity_ids } => {
-            format!("generate embeddings activities={}", activity_ids.len())
+            format!("Embeddings for {} activities", activity_ids.len())
         }
     }
+}
+
+fn format_elapsed(secs: u64) -> String {
+    let mins = secs / 60;
+    let remaining_secs = secs % 60;
+
+    if mins > 0 {
+        format!("{}m {}s", mins, remaining_secs)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
+fn create_sync_logger(
+    log: Option<String>,
+    verbose: bool,
+) -> Result<(Option<RequestLogger>, Option<PathBuf>)> {
+    let Some(path) = resolve_log_path(log, verbose)? else {
+        return Ok((None, None));
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            GarminError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to create log directory {}: {}", parent.display(), e),
+            ))
+        })?;
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| {
+            GarminError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to open log file {}: {}", path.display(), e),
+            ))
+        })?;
+
+    Ok((Some(RequestLogger::new(file, verbose)), Some(path)))
+}
+
+fn resolve_log_path(log: Option<String>, verbose: bool) -> Result<Option<PathBuf>> {
+    let Some(path) = log.map(PathBuf::from).or_else(|| {
+        verbose.then(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(default_log_filename())
+        })
+    }) else {
+        return Ok(None);
+    };
+
+    if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
+        return Ok(Some(path));
+    }
+
+    if path.exists() && !path.is_dir() {
+        return Ok(Some(path));
+    }
+
+    Ok(Some(path.join(default_log_filename())))
+}
+
+fn default_log_filename() -> String {
+    format!("garmin-sync-{}.log", Utc::now().format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Reset failed tasks to pending
@@ -298,20 +373,20 @@ mod tests {
     }
 
     #[test]
-    fn format_sync_task_type_describes_active_tasks_compactly() {
+    fn task_description_describes_active_tasks_compactly() {
         assert_eq!(
-            format_sync_task_type(&SyncTaskType::DailyHealth {
+            task_description(&SyncTaskType::DailyHealth {
                 date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap()
             }),
-            "daily health date=2026-07-05"
+            "Health 2026-07-05"
         );
         assert_eq!(
-            format_sync_task_type(&SyncTaskType::DownloadGpx {
+            task_description(&SyncTaskType::DownloadGpx {
                 activity_id: 42,
                 activity_name: Some("Tempo Run".to_string()),
                 activity_date: Some("2026-07-04".to_string()),
             }),
-            "download GPX activity_id=42 date=2026-07-04 name=\"Tempo Run\""
+            "GPX 2026-07-04 Tempo Run"
         );
     }
 }

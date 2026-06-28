@@ -19,13 +19,13 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 
-use crate::client::{GarminClient, OAuth2Token};
+use crate::client::{GarminClient, OAuth2Token, RequestLogger};
 use crate::db::models::{
     Activity, DailyHealth, PerformanceMetrics, SyncPipeline, SyncTask, SyncTaskType, TrackPoint,
 };
 use crate::storage::{ParquetStore, Storage, SyncDb};
 use crate::{GarminError, Result};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 pub use progress::{PlanningStep, SharedProgress, SyncProgress};
 pub use rate_limiter::{RateLimiter, SharedRateLimiter};
@@ -418,8 +418,15 @@ impl SyncEngine {
         // Set storage path and sync mode for display
         progress.set_storage_path(&self.storage.base_path().display().to_string());
         progress.set_sync_mode(opts.mode);
+        progress.set_logger(opts.logger.clone());
+        progress.set_worker_slots(opts.concurrency);
         println!("Using storage: {}", progress.get_storage_path());
         println!("Planning sync...");
+        progress.log(format!(
+            "Sync starting: storage={}, mode={}",
+            progress.get_storage_path(),
+            opts.mode
+        ));
 
         // Planning phase - updates progress instead of printing
         progress.set_planning_step(PlanningStep::FetchingProfile);
@@ -468,6 +475,7 @@ impl SyncEngine {
 
         print_sync_overview(&progress);
         println!("Planning complete.");
+        progress.log("Planning complete.");
 
         let stats_result = if opts.dry_run {
             println!("Dry run mode - no changes will be made");
@@ -496,6 +504,7 @@ impl SyncEngine {
 
         if !opts.dry_run {
             println!("\nSync complete: {}", stats);
+            progress.log(format!("Sync complete: {}", stats));
         }
         Ok(stats)
     }
@@ -651,14 +660,14 @@ impl SyncEngine {
         // Wait for all producers to finish
         for h in producer_handles {
             if let Err(e) = h.await {
-                eprintln!("Producer error: {}", e);
+                progress.log(format!("Producer task join error: {}", e));
             }
         }
 
         // Wait for all consumers to finish
         for h in consumer_handles {
             if let Err(e) = h.await {
-                eprintln!("Consumer error: {}", e);
+                progress.log(format!("Consumer task join error: {}", e));
             }
         }
 
@@ -1045,7 +1054,8 @@ fn print_sync_errors(progress: &SyncProgress) {
     }
 
     println!("\nRecent errors:");
-    for error in errors.iter().take(5) {
+    let start = errors.len().saturating_sub(5);
+    for error in errors.iter().skip(start) {
         println!("  [{}] {}: {}", error.stream, error.item, error.error);
     }
 
@@ -1055,11 +1065,28 @@ fn print_sync_errors(progress: &SyncProgress) {
 }
 
 async fn run_progress_reporter(progress: SharedProgress) {
+    let mut rendered_lines = 0usize;
+    let interactive = std::io::stdout().is_terminal();
+
     loop {
-        progress.print_simple_status();
+        let lines = progress.status_lines();
+
+        if interactive {
+            if rendered_lines > 0 {
+                print!("\x1b[{}A", rendered_lines);
+            }
+
+            for line in &lines {
+                print!("\x1b[2K{}\n", line);
+            }
+            rendered_lines = lines.len();
+        } else {
+            println!("{}", lines.join("\n"));
+        }
+
+        let _ = std::io::Write::flush(&mut std::io::stdout());
 
         if progress.should_shutdown() || progress.is_complete() {
-            println!();
             break;
         }
 
@@ -1088,6 +1115,8 @@ pub struct SyncOptions {
     pub concurrency: usize,
     /// Sync mode (Latest or Backfill)
     pub mode: progress::SyncMode,
+    /// Optional detailed log writer
+    pub logger: Option<RequestLogger>,
 }
 
 impl Default for SyncOptions {
@@ -1102,6 +1131,7 @@ impl Default for SyncOptions {
             force: false,
             concurrency: 4,
             mode: progress::SyncMode::Latest,
+            logger: None,
         }
     }
 }
@@ -1241,6 +1271,7 @@ fn fail_progress_for_task(task: &SyncTask, progress: &SyncProgress, error: &str)
 }
 
 const MAX_IDLE_RETRIES: u32 = 10;
+const TASK_TIMEOUT_SECS: u64 = 300;
 
 fn should_exit_when_idle(idle_loops: u32, in_flight: usize) -> bool {
     idle_loops >= MAX_IDLE_RETRIES && in_flight == 0
@@ -1281,13 +1312,69 @@ fn record_write_failure(data: &SyncData, progress: &SyncProgress, error: &str) {
     }
 }
 
+fn task_progress_metadata(task: &SyncTask) -> Option<(&'static str, String)> {
+    match &task.task_type {
+        SyncTaskType::Activities { start, limit, .. } => Some((
+            "Activities",
+            format!("Activities {}-{}", start, start + limit),
+        )),
+        SyncTaskType::DownloadGpx {
+            activity_id,
+            activity_name,
+            activity_date,
+        } => {
+            let name = activity_name
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| activity_id.to_string());
+            let item = activity_date
+                .as_deref()
+                .map(|date| format!("{} {}", date, name))
+                .unwrap_or(name);
+            Some(("GPX", item))
+        }
+        SyncTaskType::DailyHealth { date } => Some(("Health", date.to_string())),
+        SyncTaskType::Performance { date } => Some(("Performance", date.to_string())),
+        _ => None,
+    }
+}
+
+fn sync_data_progress_metadata(data: &SyncData) -> (&'static str, String, i64) {
+    match data {
+        SyncData::Activities {
+            records, task_id, ..
+        } => {
+            let item = match (records.first(), records.last()) {
+                (Some(first), Some(last)) if first.activity_id != last.activity_id => {
+                    format!("{}..{}", first.activity_id, last.activity_id)
+                }
+                (Some(first), _) => first.activity_id.to_string(),
+                _ => "empty page".to_string(),
+            };
+            ("Activities", item, *task_id)
+        }
+        SyncData::Health {
+            record, task_id, ..
+        } => ("Health", record.date.to_string(), *task_id),
+        SyncData::Performance {
+            record, task_id, ..
+        } => ("Performance", record.date.to_string(), *task_id),
+        SyncData::TrackPoints {
+            activity_id,
+            date,
+            task_id,
+            ..
+        } => ("GPX", format!("{} ({})", date, activity_id), *task_id),
+    }
+}
+
 // =============================================================================
 // Producer/Consumer Pipeline
 // =============================================================================
 
 /// Producer loop: fetches data from Garmin API and sends to channel
 async fn producer_loop(
-    _id: usize,
+    id: usize,
     queue: SharedTaskQueue,
     tx: mpsc::Sender<SyncData>,
     context: ProducerContext,
@@ -1316,7 +1403,9 @@ async fn producer_loop(
                 continue;
             }
             Err(e) => {
-                eprintln!("Queue error: {}", e);
+                context
+                    .progress
+                    .log(format!("Producer P{} queue error: {}", id, e));
                 break;
             }
         };
@@ -1327,6 +1416,16 @@ async fn producer_loop(
 
         // Update progress display
         update_progress_for_task(&task, &context.progress);
+        if let Some((stream, item)) = task_progress_metadata(&task) {
+            context.progress.set_worker_task(
+                "P",
+                id,
+                Some(task_id),
+                stream,
+                item,
+                "checking cache",
+            );
+        }
 
         // Skip tasks that already exist unless forcing
         if !context.force {
@@ -1353,76 +1452,154 @@ async fn producer_loop(
 
             if should_skip {
                 if let Err(e) = queue.mark_completed(task_id, claim_attempt).await {
-                    eprintln!("Failed to mark task completed: {}", e);
+                    context.progress.log(format!(
+                        "Producer P{} failed to mark skipped task #{} completed: {}",
+                        id, task_id, e
+                    ));
                 }
                 complete_progress_for_task(&task, &context.progress);
                 {
                     let mut s = context.stats.lock().await;
                     s.completed += 1;
                 }
+                context.progress.clear_worker("P", id);
                 context.in_flight.fetch_sub(1, Ordering::Relaxed);
                 continue;
             }
         }
 
         // Acquire rate limiter permit
+        context
+            .progress
+            .update_worker_status("P", id, "waiting for rate limit");
         let _permit = context.rate_limiter.acquire().await;
         context.progress.record_request();
+        context.progress.update_worker_status("P", id, "fetching");
 
         // Fetch data based on task type
-        let result = fetch_task_data(
-            &task,
-            &context.client,
-            &context.token,
-            &context.display_name,
-            context.profile_id,
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(TASK_TIMEOUT_SECS),
+            fetch_task_data(
+                &task,
+                &context.client,
+                &context.token,
+                &context.display_name,
+                context.profile_id,
+            ),
         )
         .await;
 
         match result {
-            Ok(data) => {
+            Ok(Ok(data)) => {
                 context.rate_limiter.on_success();
+                context
+                    .progress
+                    .update_worker_status("P", id, "waiting for writer");
                 // Send to consumer
                 if tx.send(data).await.is_err() {
                     // Channel closed, consumer is done
                     context.in_flight.fetch_sub(1, Ordering::Relaxed);
                     let backoff = Duration::seconds(60);
+                    let error_msg = "Consumer channel closed";
                     let _ = queue
-                        .mark_failed(task_id, claim_attempt, "Consumer channel closed", backoff)
+                        .mark_failed(task_id, claim_attempt, error_msg, backoff)
                         .await;
+                    fail_progress_for_task(&task, &context.progress, error_msg);
+                    {
+                        let mut s = context.stats.lock().await;
+                        s.failed += 1;
+                    }
+                    context.progress.log(format!(
+                        "Producer P{} could not hand task #{} to writer: {}",
+                        id, task_id, error_msg
+                    ));
+                    context.progress.clear_worker("P", id);
                     break;
                 }
+                context.progress.clear_worker("P", id);
             }
-            Err(GarminError::RateLimited) => {
+            Ok(Err(GarminError::RateLimited)) => {
                 context.rate_limiter.on_rate_limit();
                 let backoff = Duration::seconds(60);
                 if let Err(e) = queue
                     .mark_failed(task_id, claim_attempt, "Rate limited", backoff)
                     .await
                 {
-                    eprintln!("Failed to mark task as rate limited: {}", e);
+                    context.progress.log(format!(
+                        "Producer P{} failed to mark task #{} as rate limited: {}",
+                        id, task_id, e
+                    ));
                 }
                 fail_progress_for_task(&task, &context.progress, "Rate limited");
                 {
                     let mut s = context.stats.lock().await;
                     s.rate_limited += 1;
                 }
+                context.progress.log(format!(
+                    "Producer P{} hit rate limit on task #{}; retry scheduled in {}s",
+                    id,
+                    task_id,
+                    backoff.num_seconds()
+                ));
+                context.progress.clear_worker("P", id);
                 context.in_flight.fetch_sub(1, Ordering::Relaxed);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let backoff = Duration::seconds(60);
                 let error_msg = e.to_string();
                 if let Err(e) = queue
                     .mark_failed(task_id, claim_attempt, &error_msg, backoff)
                     .await
                 {
-                    eprintln!("Failed to mark task as failed: {}", e);
+                    context.progress.log(format!(
+                        "Producer P{} failed to mark task #{} as failed: {}",
+                        id, task_id, e
+                    ));
                 }
                 fail_progress_for_task(&task, &context.progress, &error_msg);
                 {
                     let mut s = context.stats.lock().await;
                     s.failed += 1;
                 }
+                context.progress.log(format!(
+                    "Producer P{} failed task #{} ({}): {}",
+                    id,
+                    task_id,
+                    task_progress_metadata(&task)
+                        .map(|(_, item)| item)
+                        .unwrap_or_else(|| "unknown task".to_string()),
+                    error_msg
+                ));
+                context.progress.clear_worker("P", id);
+                context.in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                let backoff = Duration::seconds(60);
+                let error_msg = format!("Timed out after {} seconds", TASK_TIMEOUT_SECS);
+                if let Err(e) = queue
+                    .mark_failed(task_id, claim_attempt, &error_msg, backoff)
+                    .await
+                {
+                    context.progress.log(format!(
+                        "Producer P{} failed to mark timed-out task #{} as failed: {}",
+                        id, task_id, e
+                    ));
+                }
+                fail_progress_for_task(&task, &context.progress, &error_msg);
+                {
+                    let mut s = context.stats.lock().await;
+                    s.failed += 1;
+                }
+                context.progress.log(format!(
+                    "Producer P{} timed out task #{} ({}); retry scheduled in {}s",
+                    id,
+                    task_id,
+                    task_progress_metadata(&task)
+                        .map(|(_, item)| item)
+                        .unwrap_or_else(|| "unknown task".to_string()),
+                    backoff.num_seconds()
+                ));
+                context.progress.clear_worker("P", id);
                 context.in_flight.fetch_sub(1, Ordering::Relaxed);
             }
         }
@@ -2194,7 +2371,7 @@ fn parse_f64_stream_value(value: &str) -> Option<f64> {
 
 /// Consumer loop: receives data from channel and writes to Parquet
 async fn consumer_loop(
-    _id: usize,
+    id: usize,
     rx: Arc<TokioMutex<mpsc::Receiver<SyncData>>>,
     parquet: Arc<ParquetStore>,
     queue: SharedTaskQueue,
@@ -2213,6 +2390,9 @@ async fn consumer_loop(
             Some(d) => d,
             None => break, // Channel closed, all producers done
         };
+
+        let (stream, item, active_task_id) = sync_data_progress_metadata(&data);
+        progress.set_worker_task("C", id, Some(active_task_id), stream, item, "writing");
 
         // Process and write data
         let result = match &data {
@@ -2346,7 +2526,10 @@ async fn consumer_loop(
                     .mark_completed_with_followups(task_id, claim_attempt, &followup_tasks)
                     .await
                 {
-                    eprintln!("Failed to mark task completed: {}", e);
+                    progress.log(format!(
+                        "Consumer C{} failed to mark task #{} completed: {}",
+                        id, task_id, e
+                    ));
                     in_flight.fetch_sub(1, Ordering::Relaxed);
                     continue;
                 }
@@ -2385,6 +2568,7 @@ async fn consumer_loop(
                     }
                     _ => {}
                 }
+                progress.clear_worker("C", id);
                 in_flight.fetch_sub(1, Ordering::Relaxed);
             }
             Err(e) => {
@@ -2395,7 +2579,10 @@ async fn consumer_loop(
                     .mark_failed(task_id, claim_attempt, &error_msg, backoff)
                     .await
                 {
-                    eprintln!("Failed to mark task as failed: {}", e);
+                    progress.log(format!(
+                        "Consumer C{} failed to mark task #{} as failed: {}",
+                        id, task_id, e
+                    ));
                 }
 
                 // Update stats
@@ -2405,7 +2592,11 @@ async fn consumer_loop(
                 }
 
                 record_write_failure(&data, &progress, &error_msg);
-                eprintln!("Write error for {}: {}", task_type, error_msg);
+                progress.log(format!(
+                    "Consumer C{} write error for task #{} ({}): {}",
+                    id, task_id, task_type, error_msg
+                ));
+                progress.clear_worker("C", id);
                 in_flight.fetch_sub(1, Ordering::Relaxed);
             }
         }
