@@ -87,6 +87,20 @@ impl TaskQueue {
         self.sync_db.pop_task(self.profile_id, pipeline)
     }
 
+    /// Pop and mark the next round-robin task as in progress while holding the queue lock.
+    pub fn pop_round_robin_mark_in_progress(
+        &mut self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let task = self.pop_round_robin_with_pipeline(pipeline)?;
+        if let Some(task) = &task {
+            if let Some(task_id) = task.id {
+                self.mark_in_progress(task_id)?;
+            }
+        }
+        Ok(task)
+    }
+
     /// Mark a task as in progress
     pub fn mark_in_progress(&self, task_id: i64) -> Result<()> {
         self.sync_db.mark_task_in_progress(task_id)
@@ -202,6 +216,15 @@ impl SharedTaskQueue {
     ) -> Result<Option<SyncTask>> {
         let mut guard = self.inner.lock().await;
         guard.pop_round_robin_with_pipeline(pipeline)
+    }
+
+    /// Get and claim the next pending task using round-robin scheduling.
+    pub async fn pop_round_robin_mark_in_progress(
+        &self,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let mut guard = self.inner.lock().await;
+        guard.pop_round_robin_mark_in_progress(pipeline)
     }
 
     /// Add a task to the queue (thread-safe)
@@ -448,6 +471,31 @@ mod tests {
 
         let first = queue.pop_round_robin().unwrap().unwrap();
         assert!(matches!(first.task_type, SyncTaskType::Activities { .. }));
+    }
+
+    #[test]
+    fn test_pop_round_robin_mark_in_progress_claims_task() {
+        let sync_db = SyncDb::open_in_memory().unwrap();
+        let mut queue = TaskQueue::new(sync_db, 1, None);
+
+        queue
+            .push(SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                },
+            ))
+            .unwrap();
+
+        let claimed = queue.pop_round_robin_mark_in_progress(None).unwrap();
+        assert!(claimed.is_some());
+
+        let next = queue.pop_round_robin_mark_in_progress(None).unwrap();
+        assert!(next.is_none());
+
+        let (_pending, in_progress, _completed, _failed) = queue.count_by_status().unwrap();
+        assert_eq!(in_progress, 1);
     }
 
     #[test]

@@ -46,7 +46,7 @@ mod sync_db;
 
 pub use parquet::ParquetStore;
 pub use partitions::EntityType;
-pub use sync_db::SyncDb;
+pub use sync_db::{ActiveSyncTask, SyncDb};
 
 use std::path::PathBuf;
 
