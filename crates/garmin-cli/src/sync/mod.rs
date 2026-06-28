@@ -296,11 +296,13 @@ impl SyncEngine {
         );
 
         self.rate_limiter.wait().await;
-        let result: std::result::Result<serde_json::Value, _> =
-            self.client.get_json(&self.token, &path).await;
-
-        match result {
-            Ok(data) => Ok(!data.as_object().map(|o| o.is_empty()).unwrap_or(true)),
+        match self
+            .client
+            .get_optional_json::<serde_json::Value>(&self.token, &path)
+            .await
+        {
+            Ok(Some(data)) => Ok(!data.as_object().map(|o| o.is_empty()).unwrap_or(true)),
+            Ok(None) => Ok(false),
             Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => Ok(false),
             Err(e) => Err(e),
         }
@@ -346,10 +348,11 @@ impl SyncEngine {
     async fn has_performance_data(&mut self, date: NaiveDate) -> Result<bool> {
         let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
         self.rate_limiter.wait().await;
-        let readiness: std::result::Result<serde_json::Value, _> =
-            self.client.get_json(&self.token, &readiness_path).await;
-
-        if let Ok(data) = readiness {
+        if let Ok(Some(data)) = self
+            .client
+            .get_optional_json::<serde_json::Value>(&self.token, &readiness_path)
+            .await
+        {
             if data.as_array().and_then(|arr| arr.first()).is_some() {
                 return Ok(true);
             }
@@ -360,11 +363,13 @@ impl SyncEngine {
             date
         );
         self.rate_limiter.wait().await;
-        let status: std::result::Result<serde_json::Value, _> =
-            self.client.get_json(&self.token, &status_path).await;
-
-        match status {
-            Ok(data) => Ok(data.get("mostRecentTrainingStatus").is_some()),
+        match self
+            .client
+            .get_optional_json::<serde_json::Value>(&self.token, &status_path)
+            .await
+        {
+            Ok(Some(data)) => Ok(data.get("mostRecentTrainingStatus").is_some()),
+            Ok(None) => Ok(false),
             Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => Ok(false),
             Err(e) => Err(e),
         }
@@ -1725,11 +1730,13 @@ async fn fetch_task_data(
             );
 
             // Try to fetch health data - may return 404/error for dates without data
-            let health_result: std::result::Result<serde_json::Value, _> =
-                client.get_json(token, &path).await;
+            let health_result = client
+                .get_optional_json::<serde_json::Value>(token, &path)
+                .await;
 
             let health = match health_result {
-                Ok(data) => data,
+                Ok(Some(data)) => data,
+                Ok(None) => serde_json::json!({}),
                 Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => {
                     // No data for this date - store empty record to mark as synced
                     serde_json::json!({})
@@ -1742,19 +1749,19 @@ async fn fetch_task_data(
                 display_name, date
             );
             let sleep_data: Option<serde_json::Value> =
-                match client.get_json(token, &sleep_path).await {
-                    Ok(data) => Some(data),
+                match client.get_optional_json(token, &sleep_path).await {
+                    Ok(data) => data,
                     Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
                     Err(e) => return Err(e),
                 };
 
             let hrv_path = format!("/hrv-service/hrv/{}", date);
-            let hrv_data: Option<serde_json::Value> = match client.get_json(token, &hrv_path).await
-            {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
+            let hrv_data: Option<serde_json::Value> =
+                match client.get_optional_json(token, &hrv_path).await {
+                    Ok(data) => data,
+                    Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
+                    Err(e) => return Err(e),
+                };
 
             let (sleep_total, deep_sleep, light_sleep, rem_sleep, sleep_score) =
                 parse_sleep_metrics(sleep_data.as_ref());
@@ -1854,59 +1861,66 @@ async fn fetch_task_data(
 
         SyncTaskType::Performance { date } => {
             let vo2_path = format!("/metrics-service/metrics/maxmet/daily/{}/{}", date, date);
-            let vo2max: Option<serde_json::Value> = match client.get_json(token, &vo2_path).await {
-                Ok(data) => Some(data),
-                Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
-                Err(e) => return Err(e),
-            };
+            let vo2max: Option<serde_json::Value> =
+                match client.get_optional_json(token, &vo2_path).await {
+                    Ok(data) => data,
+                    Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
+                    Err(e) => return Err(e),
+                };
 
             let race_path = format!(
                 "/metrics-service/metrics/racepredictions/daily/{}?fromCalendarDate={}&toCalendarDate={}",
                 display_name, date, date
             );
             let race_predictions: Option<serde_json::Value> =
-                match client.get_json(token, &race_path).await {
-                    Ok(data) => Some(data),
+                match client.get_optional_json(token, &race_path).await {
+                    Ok(data) => data,
                     Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
                     Err(e) => return Err(e),
                 };
 
             // Fetch training readiness
             let readiness_path = format!("/metrics-service/metrics/trainingreadiness/{}", date);
-            let training_readiness: Option<serde_json::Value> =
-                client.get_json(token, &readiness_path).await.ok();
+            let training_readiness: Option<serde_json::Value> = client
+                .get_optional_json(token, &readiness_path)
+                .await
+                .ok()
+                .flatten();
 
             // Fetch training status
             let status_path = format!(
                 "/metrics-service/metrics/trainingstatus/aggregated/{}",
                 date
             );
-            let training_status: Option<serde_json::Value> =
-                client.get_json(token, &status_path).await.ok();
+            let training_status: Option<serde_json::Value> = client
+                .get_optional_json(token, &status_path)
+                .await
+                .ok()
+                .flatten();
 
             let endurance_path = format!(
                 "/metrics-service/metrics/endurancescore?calendarDate={}",
                 date
             );
             let endurance_score_data: Option<serde_json::Value> =
-                match client.get_json(token, &endurance_path).await {
-                    Ok(data) => Some(data),
+                match client.get_optional_json(token, &endurance_path).await {
+                    Ok(data) => data,
                     Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
                     Err(e) => return Err(e),
                 };
 
             let hill_path = format!("/metrics-service/metrics/hillscore?calendarDate={}", date);
             let hill_score_data: Option<serde_json::Value> =
-                match client.get_json(token, &hill_path).await {
-                    Ok(data) => Some(data),
+                match client.get_optional_json(token, &hill_path).await {
+                    Ok(data) => data,
                     Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
                     Err(e) => return Err(e),
                 };
 
             let fitness_age_path = format!("/fitnessage-service/fitnessage/{}", date);
             let fitness_age_data: Option<serde_json::Value> =
-                match client.get_json(token, &fitness_age_path).await {
-                    Ok(data) => Some(data),
+                match client.get_optional_json(token, &fitness_age_path).await {
+                    Ok(data) => data,
                     Err(GarminError::NotFound(_)) | Err(GarminError::Api { .. }) => None,
                     Err(e) => return Err(e),
                 };
