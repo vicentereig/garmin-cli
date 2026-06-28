@@ -669,15 +669,16 @@ impl SyncEngine {
     /// GPX totals are updated dynamically as activities are discovered.
     fn count_tasks_for_progress(&self, progress: &SyncProgress) -> Result<()> {
         // Count actual tasks by type from the queue
-        let (_activities, _gpx, health, performance) = self.queue.count_by_type()?;
+        let (activities, gpx, health, performance) = self.queue.count_by_type()?;
 
         // Activities and GPX totals are set during planning from API discovery
-        // Only set them if planning didn't provide accurate counts
+        // or restored from actual queue counts when resuming an interrupted sync.
         if progress.activities.get_total() == 0 {
-            progress.activities.set_total(1); // At least 1 for pagination
+            progress.activities.set_total(activities.max(1)); // At least 1 for pagination
             progress.activities.set_dynamic(true);
         }
         if progress.gpx.get_total() == 0 {
+            progress.gpx.set_total(gpx);
             progress.gpx.set_dynamic(true); // Will be discovered during sync
         }
 
@@ -2337,6 +2338,84 @@ mod tests {
         assert!(!should_exit_when_idle(MAX_IDLE_RETRIES, 1));
         assert!(should_exit_when_idle(MAX_IDLE_RETRIES, 0));
         assert!(!should_exit_when_idle(MAX_IDLE_RETRIES - 1, 0));
+    }
+
+    #[test]
+    fn test_count_tasks_for_progress_uses_resumed_activity_and_gpx_counts() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(temp_dir.path().to_path_buf()).unwrap();
+        let engine = SyncEngine::with_storage(
+            storage,
+            GarminClient::new_with_base_url("http://localhost"),
+            test_token(),
+        )
+        .unwrap();
+
+        engine
+            .queue
+            .push(SyncTask::new(
+                engine.profile_id,
+                SyncPipeline::Backfill,
+                SyncTaskType::Activities {
+                    start: 0,
+                    limit: 50,
+                    min_date: None,
+                    max_date: None,
+                },
+            ))
+            .unwrap();
+        engine
+            .queue
+            .push(SyncTask::new(
+                engine.profile_id,
+                SyncPipeline::Backfill,
+                SyncTaskType::DownloadGpx {
+                    activity_id: 42,
+                    activity_name: Some("Run".to_string()),
+                    activity_date: Some("2025-01-01".to_string()),
+                },
+            ))
+            .unwrap();
+        engine
+            .queue
+            .push(SyncTask::new(
+                engine.profile_id,
+                SyncPipeline::Backfill,
+                SyncTaskType::DownloadGpx {
+                    activity_id: 43,
+                    activity_name: Some("Ride".to_string()),
+                    activity_date: Some("2025-01-02".to_string()),
+                },
+            ))
+            .unwrap();
+        engine
+            .queue
+            .push(SyncTask::new(
+                engine.profile_id,
+                SyncPipeline::Backfill,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                },
+            ))
+            .unwrap();
+        engine
+            .queue
+            .push(SyncTask::new(
+                engine.profile_id,
+                SyncPipeline::Backfill,
+                SyncTaskType::Performance {
+                    date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                },
+            ))
+            .unwrap();
+
+        let progress = SyncProgress::new();
+        engine.count_tasks_for_progress(&progress).unwrap();
+
+        assert_eq!(progress.activities.get_total(), 1);
+        assert_eq!(progress.gpx.get_total(), 2);
+        assert_eq!(progress.health.get_total(), 1);
+        assert_eq!(progress.performance.get_total(), 1);
     }
 
     #[test]
