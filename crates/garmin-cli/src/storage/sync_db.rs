@@ -6,11 +6,22 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::models::{SyncPipeline, SyncState, SyncTask, SyncTaskType, TaskStatus};
 use crate::error::{GarminError, Result};
+
+/// Task currently marked in progress in the sync queue.
+#[derive(Debug, Clone)]
+pub struct ActiveSyncTask {
+    pub id: i64,
+    pub task_type: SyncTaskType,
+    pub pipeline: SyncPipeline,
+    pub attempts: i32,
+    pub last_error: Option<String>,
+    pub in_progress_at: Option<DateTime<Utc>>,
+}
 
 /// SQLite database for sync state and task queue
 pub struct SyncDb {
@@ -62,6 +73,7 @@ impl SyncDb {
                     attempts INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    in_progress_at TEXT,
                     next_retry_at TEXT,
                     completed_at TEXT
                 );
@@ -100,6 +112,17 @@ impl SyncDb {
                 .map_err(|e| {
                     GarminError::Database(format!(
                         "Failed to add pipeline column to sync_tasks: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        if !self.column_exists("sync_tasks", "in_progress_at")? {
+            self.conn
+                .execute("ALTER TABLE sync_tasks ADD COLUMN in_progress_at TEXT", [])
+                .map_err(|e| {
+                    GarminError::Database(format!(
+                        "Failed to add in_progress_at column to sync_tasks: {}",
                         e
                     ))
                 })?;
@@ -544,10 +567,17 @@ impl SyncDb {
     pub fn mark_task_in_progress(&self, task_id: i64) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE sync_tasks SET status = 'in_progress', attempts = attempts + 1 WHERE id = ?",
+                "UPDATE sync_tasks
+                 SET status = 'in_progress',
+                     attempts = attempts + 1,
+                     in_progress_at = datetime('now'),
+                     last_error = NULL
+                 WHERE id = ?",
                 params![task_id],
             )
-            .map_err(|e| GarminError::Database(format!("Failed to mark task in progress: {}", e)))?;
+            .map_err(|e| {
+                GarminError::Database(format!("Failed to mark task in progress: {}", e))
+            })?;
 
         Ok(())
     }
@@ -556,7 +586,11 @@ impl SyncDb {
     pub fn mark_task_completed(&self, task_id: i64) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE sync_tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+                "UPDATE sync_tasks
+                 SET status = 'completed',
+                     completed_at = datetime('now'),
+                     in_progress_at = NULL
+                 WHERE id = ?",
                 params![task_id],
             )
             .map_err(|e| GarminError::Database(format!("Failed to mark task completed: {}", e)))?;
@@ -571,6 +605,7 @@ impl SyncDb {
                 "UPDATE sync_tasks SET
                      status = 'failed',
                      last_error = ?,
+                     in_progress_at = NULL,
                      next_retry_at = datetime('now', '+' || ? || ' seconds')
                  WHERE id = ?",
                 params![error, retry_delay_secs, task_id],
@@ -585,7 +620,10 @@ impl SyncDb {
         let count = self
             .conn
             .execute(
-                "UPDATE sync_tasks SET status = 'pending' WHERE status = 'in_progress'",
+                "UPDATE sync_tasks
+                 SET status = 'pending',
+                     in_progress_at = NULL
+                 WHERE status = 'in_progress'",
                 [],
             )
             .map_err(|e| GarminError::Database(format!("Failed to recover tasks: {}", e)))?;
@@ -704,6 +742,53 @@ impl SyncDb {
         Ok((activities, gpx, health, performance))
     }
 
+    /// List tasks currently marked in progress for a profile.
+    pub fn list_in_progress_tasks(&self, profile_id: i32) -> Result<Vec<ActiveSyncTask>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, task_data, pipeline, attempts, last_error, in_progress_at
+                 FROM sync_tasks
+                 WHERE profile_id = ? AND status = 'in_progress'
+                 ORDER BY in_progress_at ASC, id ASC",
+            )
+            .map_err(|e| {
+                GarminError::Database(format!("Failed to prepare active task query: {}", e))
+            })?;
+
+        let rows = stmt
+            .query_map(params![profile_id], |row| {
+                let task_data: String = row.get(1)?;
+                let task_type: SyncTaskType = serde_json::from_str(&task_data).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let pipeline_str: String = row.get(2)?;
+                let in_progress_at = row
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|s| parse_sqlite_datetime(&s));
+
+                Ok(ActiveSyncTask {
+                    id: row.get(0)?,
+                    task_type,
+                    pipeline: parse_pipeline(&pipeline_str),
+                    attempts: row.get(3)?,
+                    last_error: row.get(4)?,
+                    in_progress_at,
+                })
+            })
+            .map_err(|e| GarminError::Database(format!("Failed to query active tasks: {}", e)))?;
+
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row.map_err(|e| GarminError::Database(e.to_string()))?);
+        }
+        Ok(tasks)
+    }
+
     /// Clean up old completed tasks
     pub fn cleanup_completed_tasks(&self, max_age_days: i32) -> Result<u32> {
         let count = self
@@ -797,6 +882,17 @@ fn parse_status(s: &str) -> TaskStatus {
     }
 }
 
+fn parse_sqlite_datetime(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .ok()
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -854,6 +950,29 @@ mod tests {
         // Should be no more pending tasks
         let next = db.pop_task(1, None).unwrap();
         assert!(next.is_none());
+    }
+
+    #[test]
+    fn test_list_in_progress_tasks_includes_started_at() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let task = SyncTask::new(
+            1,
+            SyncPipeline::Backfill,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2024, 12, 15).unwrap(),
+            },
+        );
+
+        let id = db.push_task(&task).unwrap();
+        db.mark_task_in_progress(id).unwrap();
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, id);
+        assert_eq!(active[0].pipeline, SyncPipeline::Backfill);
+        assert_eq!(active[0].attempts, 1);
+        assert!(active[0].in_progress_at.is_some());
     }
 
     #[test]
