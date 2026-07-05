@@ -92,13 +92,20 @@ impl TaskQueue {
         &mut self,
         pipeline: Option<SyncPipeline>,
     ) -> Result<Option<SyncTask>> {
-        let task = self.pop_round_robin_with_pipeline(pipeline)?;
-        if let Some(task) = &task {
-            if let Some(task_id) = task.id {
-                self.mark_in_progress(task_id)?;
+        const TASK_TYPES: [&str; 4] = ["activities", "download_gpx", "performance", "daily_health"];
+
+        for _ in 0..TASK_TYPES.len() {
+            let idx = self.rr_index % TASK_TYPES.len();
+            self.rr_index = self.rr_index.wrapping_add(1);
+            if let Some(task) =
+                self.sync_db
+                    .claim_next_task_by_type(self.profile_id, TASK_TYPES[idx], pipeline)?
+            {
+                return Ok(Some(task));
             }
         }
-        Ok(task)
+
+        self.sync_db.claim_next_task(self.profile_id, pipeline)
     }
 
     /// Mark a task as in progress
@@ -490,12 +497,56 @@ mod tests {
 
         let claimed = queue.pop_round_robin_mark_in_progress(None).unwrap();
         assert!(claimed.is_some());
+        let claimed = claimed.unwrap();
+        assert_eq!(claimed.status, crate::db::models::TaskStatus::InProgress);
+        assert_eq!(claimed.attempts, 1);
 
         let next = queue.pop_round_robin_mark_in_progress(None).unwrap();
         assert!(next.is_none());
 
         let (_pending, in_progress, _completed, _failed) = queue.count_by_status().unwrap();
         assert_eq!(in_progress, 1);
+    }
+
+    #[test]
+    fn test_pop_round_robin_mark_in_progress_respects_pipeline_filter() {
+        let sync_db = SyncDb::open_in_memory().unwrap();
+        let mut queue = TaskQueue::new(sync_db, 1, None);
+
+        let frontier_task = SyncTask::new(
+            1,
+            SyncPipeline::Frontier,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+            },
+        );
+        let backfill_task = SyncTask::new(
+            1,
+            SyncPipeline::Backfill,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2025, 1, 2).unwrap(),
+            },
+        );
+
+        let frontier_id = queue.push(frontier_task).unwrap();
+        let backfill_id = queue.push(backfill_task).unwrap();
+
+        let claimed_backfill = queue
+            .pop_round_robin_mark_in_progress(Some(SyncPipeline::Backfill))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_backfill.id, Some(backfill_id));
+        assert_eq!(claimed_backfill.pipeline, SyncPipeline::Backfill);
+
+        let claimed_frontier = queue
+            .pop_round_robin_mark_in_progress(Some(SyncPipeline::Frontier))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_frontier.id, Some(frontier_id));
+        assert_eq!(claimed_frontier.pipeline, SyncPipeline::Frontier);
+
+        let next = queue.pop_round_robin_mark_in_progress(None).unwrap();
+        assert!(next.is_none());
     }
 
     #[test]

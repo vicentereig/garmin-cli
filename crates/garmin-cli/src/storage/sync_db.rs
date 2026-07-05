@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::db::models::{SyncPipeline, SyncState, SyncTask, SyncTaskType, TaskStatus};
 use crate::error::{GarminError, Result};
@@ -458,34 +458,7 @@ impl SyncDb {
         };
 
         self.conn
-            .query_row(query, params, |row| {
-                let task_data: String = row.get(3)?;
-                let task_type: SyncTaskType = serde_json::from_str(&task_data).unwrap();
-                let pipeline_str: String = row.get(4)?;
-                let status_str: String = row.get(5)?;
-
-                Ok(SyncTask {
-                    id: Some(row.get(0)?),
-                    profile_id: row.get(1)?,
-                    task_type,
-                    pipeline: parse_pipeline(&pipeline_str),
-                    status: parse_status(&status_str),
-                    attempts: row.get(6)?,
-                    last_error: row.get(7)?,
-                    created_at: row
-                        .get::<_, Option<String>>(8)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    next_retry_at: row
-                        .get::<_, Option<String>>(9)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    completed_at: row
-                        .get::<_, Option<String>>(10)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                })
-            })
+            .query_row(query, params, sync_task_from_row)
             .optional()
             .map_err(|e| GarminError::Database(format!("Failed to pop task: {}", e)))
     }
@@ -531,53 +504,105 @@ impl SyncDb {
         };
 
         self.conn
-            .query_row(query, params, |row| {
-                let task_data: String = row.get(3)?;
-                let task_type: SyncTaskType = serde_json::from_str(&task_data).unwrap();
-                let pipeline_str: String = row.get(4)?;
-                let status_str: String = row.get(5)?;
-
-                Ok(SyncTask {
-                    id: Some(row.get(0)?),
-                    profile_id: row.get(1)?,
-                    task_type,
-                    pipeline: parse_pipeline(&pipeline_str),
-                    status: parse_status(&status_str),
-                    attempts: row.get(6)?,
-                    last_error: row.get(7)?,
-                    created_at: row
-                        .get::<_, Option<String>>(8)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    next_retry_at: row
-                        .get::<_, Option<String>>(9)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    completed_at: row
-                        .get::<_, Option<String>>(10)?
-                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                        .map(|dt| dt.with_timezone(&Utc)),
-                })
-            })
+            .query_row(query, params, sync_task_from_row)
             .optional()
             .map_err(|e| GarminError::Database(format!("Failed to pop task by type: {}", e)))
     }
 
+    /// Atomically claim the next eligible task for a profile.
+    pub fn claim_next_task(
+        &self,
+        profile_id: i32,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let (query, params) = if let Some(pipeline) = pipeline {
+            (
+                claim_task_query(
+                    "profile_id = ?
+                       AND pipeline = ?
+                       AND status IN ('pending', 'failed')
+                       AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+                ),
+                params![profile_id, pipeline_name(pipeline)],
+            )
+        } else {
+            (
+                claim_task_query(
+                    "profile_id = ?
+                       AND status IN ('pending', 'failed')
+                       AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+                ),
+                params![profile_id],
+            )
+        };
+
+        self.conn
+            .query_row(&query, params, sync_task_from_row)
+            .optional()
+            .map_err(|e| GarminError::Database(format!("Failed to claim task: {}", e)))
+    }
+
+    /// Atomically claim the next eligible task for a profile and task type.
+    pub fn claim_next_task_by_type(
+        &self,
+        profile_id: i32,
+        task_type: &str,
+        pipeline: Option<SyncPipeline>,
+    ) -> Result<Option<SyncTask>> {
+        let (query, params) = if let Some(pipeline) = pipeline {
+            (
+                claim_task_query(
+                    "profile_id = ?
+                       AND task_type = ?
+                       AND pipeline = ?
+                       AND status IN ('pending', 'failed')
+                       AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+                ),
+                params![profile_id, task_type, pipeline_name(pipeline)],
+            )
+        } else {
+            (
+                claim_task_query(
+                    "profile_id = ?
+                       AND task_type = ?
+                       AND status IN ('pending', 'failed')
+                       AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
+                ),
+                params![profile_id, task_type],
+            )
+        };
+
+        self.conn
+            .query_row(&query, params, sync_task_from_row)
+            .optional()
+            .map_err(|e| GarminError::Database(format!("Failed to claim task by type: {}", e)))
+    }
+
     /// Mark a task as in progress
     pub fn mark_task_in_progress(&self, task_id: i64) -> Result<()> {
-        self.conn
+        let count = self
+            .conn
             .execute(
                 "UPDATE sync_tasks
                  SET status = 'in_progress',
                      attempts = attempts + 1,
                      in_progress_at = datetime('now'),
                      last_error = NULL
-                 WHERE id = ?",
+                 WHERE id = ?
+                   AND status IN ('pending', 'failed')
+                   AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))",
                 params![task_id],
             )
             .map_err(|e| {
                 GarminError::Database(format!("Failed to mark task in progress: {}", e))
             })?;
+
+        if count == 0 {
+            return Err(GarminError::Database(format!(
+                "Task {} is not eligible to be marked in progress",
+                task_id
+            )));
+        }
 
         Ok(())
     }
@@ -882,6 +907,55 @@ fn parse_status(s: &str) -> TaskStatus {
     }
 }
 
+fn claim_task_query(where_clause: &str) -> String {
+    format!(
+        "UPDATE sync_tasks
+         SET status = 'in_progress',
+             attempts = attempts + 1,
+             last_error = NULL,
+             in_progress_at = datetime('now')
+         WHERE id = (
+             SELECT id
+             FROM sync_tasks
+             WHERE {where_clause}
+             ORDER BY
+                 CASE WHEN status = 'failed' THEN 0 ELSE 1 END,
+                 created_at ASC
+             LIMIT 1
+         )
+         RETURNING id, profile_id, task_type, task_data, pipeline, status, attempts, last_error,
+                   created_at, next_retry_at, completed_at"
+    )
+}
+
+fn sync_task_from_row(row: &Row<'_>) -> rusqlite::Result<SyncTask> {
+    let task_data: String = row.get(3)?;
+    let task_type: SyncTaskType = serde_json::from_str(&task_data).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    let pipeline_str: String = row.get(4)?;
+    let status_str: String = row.get(5)?;
+
+    Ok(SyncTask {
+        id: Some(row.get(0)?),
+        profile_id: row.get(1)?,
+        task_type,
+        pipeline: parse_pipeline(&pipeline_str),
+        status: parse_status(&status_str),
+        attempts: row.get(6)?,
+        last_error: row.get(7)?,
+        created_at: row
+            .get::<_, Option<String>>(8)?
+            .and_then(|s| parse_sqlite_datetime(&s)),
+        next_retry_at: row
+            .get::<_, Option<String>>(9)?
+            .and_then(|s| parse_sqlite_datetime(&s)),
+        completed_at: row
+            .get::<_, Option<String>>(10)?
+            .and_then(|s| parse_sqlite_datetime(&s)),
+    })
+}
+
 fn parse_sqlite_datetime(value: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
@@ -896,6 +970,7 @@ fn parse_sqlite_datetime(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn test_profile_management() {
@@ -1135,5 +1210,133 @@ mod tests {
 
         let (_activities, _gpx, health, _perf) = db.count_tasks_by_type(1, None).unwrap();
         assert_eq!(health, 1);
+    }
+
+    #[test]
+    fn test_claim_next_task_marks_in_progress_once() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let task = SyncTask::new(
+            1,
+            SyncPipeline::Frontier,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            },
+        );
+        let id = db.push_task(&task).unwrap();
+
+        let claimed = db.claim_next_task(1, None).unwrap().unwrap();
+        assert_eq!(claimed.id, Some(id));
+        assert_eq!(claimed.status, TaskStatus::InProgress);
+        assert_eq!(claimed.attempts, 1);
+        assert!(claimed.last_error.is_none());
+
+        let next = db.claim_next_task(1, None).unwrap();
+        assert!(next.is_none());
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].attempts, 1);
+    }
+
+    #[test]
+    fn test_claim_next_task_by_type_respects_pipeline() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let frontier = SyncTask::new(
+            1,
+            SyncPipeline::Frontier,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            },
+        );
+        let backfill = SyncTask::new(
+            1,
+            SyncPipeline::Backfill,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            },
+        );
+
+        let frontier_id = db.push_task(&frontier).unwrap();
+        let backfill_id = db.push_task(&backfill).unwrap();
+
+        let claimed_backfill = db
+            .claim_next_task_by_type(1, "daily_health", Some(SyncPipeline::Backfill))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_backfill.id, Some(backfill_id));
+        assert_eq!(claimed_backfill.pipeline, SyncPipeline::Backfill);
+
+        let claimed_frontier = db
+            .claim_next_task_by_type(1, "daily_health", Some(SyncPipeline::Frontier))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed_frontier.id, Some(frontier_id));
+        assert_eq!(claimed_frontier.pipeline, SyncPipeline::Frontier);
+    }
+
+    #[test]
+    fn test_claim_next_task_single_winner_across_connections() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("sync.db");
+
+        let db = SyncDb::open(&db_path).unwrap();
+        db.push_task(&SyncTask::new(
+            1,
+            SyncPipeline::Frontier,
+            SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            },
+        ))
+        .unwrap();
+        drop(db);
+
+        let workers = 8;
+        let barrier = Arc::new(Barrier::new(workers));
+        let mut handles = Vec::new();
+        for _ in 0..workers {
+            let db_path = db_path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let db = SyncDb::open(&db_path).unwrap();
+                barrier.wait();
+                db.claim_next_task(1, None)
+                    .unwrap()
+                    .map(|task| task.id.unwrap())
+            }));
+        }
+
+        let claimed: Vec<i64> = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(claimed.len(), 1);
+
+        let db = SyncDb::open(&db_path).unwrap();
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].attempts, 1);
+    }
+
+    #[test]
+    fn test_mark_task_in_progress_rejects_already_claimed_task() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let id = db
+            .push_task(&SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+                },
+            ))
+            .unwrap();
+
+        db.mark_task_in_progress(id).unwrap();
+        assert!(db.mark_task_in_progress(id).is_err());
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active[0].attempts, 1);
     }
 }

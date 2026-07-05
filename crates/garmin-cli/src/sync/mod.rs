@@ -1278,11 +1278,10 @@ async fn producer_loop(
     let mut empty_count = 0;
 
     loop {
-        // Pop next task
-        let next_task = match context.pipeline_filter {
-            Some(pipeline) => queue.pop_round_robin_with_pipeline(Some(pipeline)).await,
-            None => queue.pop_round_robin().await,
-        };
+        // Claim next task
+        let next_task = queue
+            .pop_round_robin_mark_in_progress(context.pipeline_filter)
+            .await;
 
         let task = match next_task {
             Ok(Some(task)) => {
@@ -1307,12 +1306,6 @@ async fn producer_loop(
 
         let task_id = task.id.unwrap();
         context.in_flight.fetch_add(1, Ordering::Relaxed);
-
-        // Mark in progress
-        if let Err(e) = queue.mark_in_progress(task_id).await {
-            eprintln!("Failed to mark task in progress: {}", e);
-            continue;
-        }
 
         // Update progress display
         update_progress_for_task(&task, &context.progress);
