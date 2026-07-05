@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::client::GarminClient;
 use crate::config::CredentialStore;
+use crate::db::models::SyncTaskType;
 use crate::error::Result;
 use crate::storage::{default_storage_path, Storage, SyncDb};
 use crate::sync::progress::SyncMode;
@@ -122,12 +123,13 @@ pub async fn status(profile: Option<String>, storage_path: Option<String>) -> Re
     let performance_files = count_partition_files(&storage_path, "performance_metrics");
     let track_files = count_partition_files(&storage_path, "track_points");
 
-    // Get pending tasks
-    let pending_count = if let Some(pid) = profile_id {
-        sync_db.count_pending_tasks(pid, None)?
-    } else {
-        0
-    };
+    // Get task status counts
+    let (pending_count, in_progress_count, completed_count, failed_count) =
+        if let Some(pid) = profile_id {
+            sync_db.count_tasks_by_status(pid)?
+        } else {
+            (0, 0, 0, 0)
+        };
 
     println!("Storage: {}", storage_path.display());
     println!("Profile: {}", profile_name);
@@ -141,8 +143,33 @@ pub async fn status(profile: Option<String>, storage_path: Option<String>) -> Re
     println!("  Performance partitions: {:>4}", performance_files);
     println!("  Track point partitions: {:>4}", track_files);
     println!();
-    if pending_count > 0 {
-        println!("Pending sync tasks: {}", pending_count);
+    if profile_id.is_some() {
+        println!("Sync tasks:");
+        println!("  Pending:     {:>4}", pending_count);
+        println!("  In progress: {:>4}", in_progress_count);
+        println!("  Failed:      {:>4}", failed_count);
+        println!("  Completed:   {:>4}", completed_count);
+    }
+    if let Some(pid) = profile_id {
+        if in_progress_count > 0 {
+            let active_tasks = sync_db.list_in_progress_tasks(pid)?;
+            println!();
+            println!("Active tasks:");
+            for task in active_tasks {
+                let started_at = task
+                    .in_progress_at
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!(
+                    "  #{} [{}] attempt {} started {} - {}",
+                    task.id,
+                    task.pipeline,
+                    task.attempts,
+                    started_at,
+                    format_sync_task_type(&task.task_type)
+                );
+            }
+        }
     }
 
     Ok(())
@@ -162,6 +189,49 @@ fn count_partition_files(storage_path: &Path, dirname: &str) -> usize {
     std::fs::read_dir(&partition_path)
         .map(|entries| entries.filter(|entry| entry.is_ok()).count())
         .unwrap_or(0)
+}
+
+fn format_sync_task_type(task_type: &SyncTaskType) -> String {
+    match task_type {
+        SyncTaskType::Activities {
+            start,
+            limit,
+            min_date,
+            max_date,
+        } => {
+            let mut desc = format!("activities page start={} limit={}", start, limit);
+            if let Some(min_date) = min_date {
+                desc.push_str(&format!(" from={}", min_date));
+            }
+            if let Some(max_date) = max_date {
+                desc.push_str(&format!(" to={}", max_date));
+            }
+            desc
+        }
+        SyncTaskType::ActivityDetail { activity_id } => {
+            format!("activity detail activity_id={}", activity_id)
+        }
+        SyncTaskType::DownloadGpx {
+            activity_id,
+            activity_name,
+            activity_date,
+        } => {
+            let mut desc = format!("download GPX activity_id={}", activity_id);
+            if let Some(activity_date) = activity_date {
+                desc.push_str(&format!(" date={}", activity_date));
+            }
+            if let Some(activity_name) = activity_name {
+                desc.push_str(&format!(" name=\"{}\"", activity_name));
+            }
+            desc
+        }
+        SyncTaskType::DailyHealth { date } => format!("daily health date={}", date),
+        SyncTaskType::Performance { date } => format!("performance date={}", date),
+        SyncTaskType::Weight { from, to } => format!("weight from={} to={}", from, to),
+        SyncTaskType::GenerateEmbeddings { activity_ids } => {
+            format!("generate embeddings activities={}", activity_ids.len())
+        }
+    }
 }
 
 /// Reset failed tasks to pending
@@ -225,5 +295,23 @@ mod tests {
         std::fs::write(activities_dir.join("2026-W11.parquet"), b"test").unwrap();
 
         assert_eq!(count_partition_files(temp_dir.path(), "activities"), 2);
+    }
+
+    #[test]
+    fn format_sync_task_type_describes_active_tasks_compactly() {
+        assert_eq!(
+            format_sync_task_type(&SyncTaskType::DailyHealth {
+                date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap()
+            }),
+            "daily health date=2026-07-05"
+        );
+        assert_eq!(
+            format_sync_task_type(&SyncTaskType::DownloadGpx {
+                activity_id: 42,
+                activity_name: Some("Tempo Run".to_string()),
+                activity_date: Some("2026-07-04".to_string()),
+            }),
+            "download GPX activity_id=42 date=2026-07-04 name=\"Tempo Run\""
+        );
     }
 }
