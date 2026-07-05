@@ -400,26 +400,7 @@ impl SyncDb {
 
     /// Push a task to the queue
     pub fn push_task(&self, task: &SyncTask) -> Result<i64> {
-        let task_data = serde_json::to_string(&task.task_type)
-            .map_err(|e| GarminError::Database(format!("Failed to serialize task: {}", e)))?;
-
-        self.conn
-            .execute(
-                "INSERT INTO sync_tasks (profile_id, task_type, task_data, pipeline, status, attempts, last_error)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![
-                    task.profile_id,
-                    task_type_name(&task.task_type),
-                    task_data,
-                    pipeline_name(task.pipeline),
-                    task.status.to_string(),
-                    task.attempts,
-                    task.last_error,
-                ],
-            )
-            .map_err(|e| GarminError::Database(format!("Failed to push task: {}", e)))?;
-
-        Ok(self.conn.last_insert_rowid())
+        insert_task(&self.conn, task)
     }
 
     /// Pop the next task from the queue for a profile
@@ -610,34 +591,108 @@ impl SyncDb {
     }
 
     /// Mark a task as completed
-    pub fn mark_task_completed(&self, task_id: i64) -> Result<()> {
-        self.conn
+    pub fn mark_task_completed(&self, task_id: i64, claim_attempt: i32) -> Result<()> {
+        let count = self
+            .conn
             .execute(
                 "UPDATE sync_tasks
                  SET status = 'completed',
                      completed_at = datetime('now'),
                      in_progress_at = NULL
-                 WHERE id = ?",
-                params![task_id],
+                 WHERE id = ?
+                   AND attempts = ?
+                   AND status = 'in_progress'",
+                params![task_id, claim_attempt],
             )
             .map_err(|e| GarminError::Database(format!("Failed to mark task completed: {}", e)))?;
+
+        if count == 0 {
+            return Err(GarminError::Database(format!(
+                "Task {} claim attempt {} is not eligible to complete",
+                task_id, claim_attempt
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Mark a task as completed and enqueue follow-up tasks in the same claim-guarded transaction.
+    pub fn mark_task_completed_with_followups(
+        &self,
+        task_id: i64,
+        claim_attempt: i32,
+        followups: &[SyncTask],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(|e| {
+            GarminError::Database(format!(
+                "Failed to start task completion transaction: {}",
+                e
+            ))
+        })?;
+
+        let count = tx
+            .execute(
+                "UPDATE sync_tasks
+                 SET status = 'completed',
+                     completed_at = datetime('now'),
+                     in_progress_at = NULL
+                 WHERE id = ?
+                   AND attempts = ?
+                   AND status = 'in_progress'",
+                params![task_id, claim_attempt],
+            )
+            .map_err(|e| GarminError::Database(format!("Failed to mark task completed: {}", e)))?;
+
+        if count == 0 {
+            return Err(GarminError::Database(format!(
+                "Task {} claim attempt {} is not eligible to complete",
+                task_id, claim_attempt
+            )));
+        }
+
+        for task in followups {
+            insert_task(&tx, task)?;
+        }
+
+        tx.commit().map_err(|e| {
+            GarminError::Database(format!(
+                "Failed to commit task completion transaction: {}",
+                e
+            ))
+        })?;
 
         Ok(())
     }
 
     /// Mark a task as failed
-    pub fn mark_task_failed(&self, task_id: i64, error: &str, retry_delay_secs: i64) -> Result<()> {
-        self.conn
+    pub fn mark_task_failed(
+        &self,
+        task_id: i64,
+        claim_attempt: i32,
+        error: &str,
+        retry_delay_secs: i64,
+    ) -> Result<()> {
+        let count = self
+            .conn
             .execute(
                 "UPDATE sync_tasks SET
                      status = 'failed',
                      last_error = ?,
                      in_progress_at = NULL,
                      next_retry_at = datetime('now', '+' || ? || ' seconds')
-                 WHERE id = ?",
-                params![error, retry_delay_secs, task_id],
+                 WHERE id = ?
+                   AND attempts = ?
+                   AND status = 'in_progress'",
+                params![error, retry_delay_secs, task_id, claim_attempt],
             )
             .map_err(|e| GarminError::Database(format!("Failed to mark task failed: {}", e)))?;
+
+        if count == 0 {
+            return Err(GarminError::Database(format!(
+                "Task {} claim attempt {} is not eligible to fail",
+                task_id, claim_attempt
+            )));
+        }
 
         Ok(())
     }
@@ -924,6 +979,28 @@ fn pipeline_name(pipeline: SyncPipeline) -> &'static str {
     }
 }
 
+fn insert_task(conn: &Connection, task: &SyncTask) -> Result<i64> {
+    let task_data = serde_json::to_string(&task.task_type)
+        .map_err(|e| GarminError::Database(format!("Failed to serialize task: {}", e)))?;
+
+    conn.execute(
+        "INSERT INTO sync_tasks (profile_id, task_type, task_data, pipeline, status, attempts, last_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            task.profile_id,
+            task_type_name(&task.task_type),
+            task_data,
+            pipeline_name(task.pipeline),
+            task.status.to_string(),
+            task.attempts,
+            task.last_error,
+        ],
+    )
+    .map_err(|e| GarminError::Database(format!("Failed to push task: {}", e)))?;
+
+    Ok(conn.last_insert_rowid())
+}
+
 fn parse_pipeline(s: &str) -> SyncPipeline {
     match s {
         "backfill" => SyncPipeline::Backfill,
@@ -1054,7 +1131,7 @@ mod tests {
         assert_eq!(popped.id, Some(id));
 
         db.mark_task_in_progress(id).unwrap();
-        db.mark_task_completed(id).unwrap();
+        db.mark_task_completed(id, 1).unwrap();
 
         // Should be no more pending tasks
         let next = db.pop_task(1, None).unwrap();
@@ -1288,7 +1365,7 @@ mod tests {
         let id = db.push_task(&task).unwrap();
 
         db.mark_task_in_progress(id).unwrap();
-        db.mark_task_failed(id, "boom", 60).unwrap();
+        db.mark_task_failed(id, 1, "boom", 60).unwrap();
 
         let (_activities, _gpx, health, _perf) = db.count_tasks_by_type(1, None).unwrap();
         assert_eq!(health, 1);
@@ -1420,5 +1497,121 @@ mod tests {
 
         let active = db.list_in_progress_tasks(1).unwrap();
         assert_eq!(active[0].attempts, 1);
+    }
+
+    #[test]
+    fn test_stale_claim_owner_cannot_complete_newer_claim() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let id = db
+            .push_task(&SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+                },
+            ))
+            .unwrap();
+
+        let first_claim = db.claim_next_task(1, None).unwrap().unwrap();
+        assert_eq!(first_claim.id, Some(id));
+        assert_eq!(first_claim.attempts, 1);
+
+        db.set_in_progress_at_seconds_ago_for_test(id, IN_PROGRESS_RECOVERY_AFTER_SECS + 60)
+            .unwrap();
+        assert_eq!(db.recover_in_progress_tasks().unwrap(), 1);
+
+        let second_claim = db.claim_next_task(1, None).unwrap().unwrap();
+        assert_eq!(second_claim.id, Some(id));
+        assert_eq!(second_claim.attempts, 2);
+
+        assert!(db.mark_task_completed(id, first_claim.attempts).is_err());
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, id);
+        assert_eq!(active[0].attempts, second_claim.attempts);
+
+        db.mark_task_completed(id, second_claim.attempts).unwrap();
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn test_stale_claim_owner_cannot_enqueue_followups() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let id = db
+            .push_task(&SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::Activities {
+                    start: 0,
+                    limit: 50,
+                    min_date: None,
+                    max_date: None,
+                },
+            ))
+            .unwrap();
+
+        let first_claim = db.claim_next_task(1, None).unwrap().unwrap();
+        assert_eq!(first_claim.id, Some(id));
+        assert_eq!(first_claim.attempts, 1);
+
+        db.set_in_progress_at_seconds_ago_for_test(id, IN_PROGRESS_RECOVERY_AFTER_SECS + 60)
+            .unwrap();
+        assert_eq!(db.recover_in_progress_tasks().unwrap(), 1);
+
+        let second_claim = db.claim_next_task(1, None).unwrap().unwrap();
+        assert_eq!(second_claim.id, Some(id));
+        assert_eq!(second_claim.attempts, 2);
+
+        let followups = vec![
+            SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DownloadGpx {
+                    activity_id: 42,
+                    activity_name: Some("Run".to_string()),
+                    activity_date: Some("2026-07-05".to_string()),
+                },
+            ),
+            SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::Activities {
+                    start: 50,
+                    limit: 50,
+                    min_date: None,
+                    max_date: None,
+                },
+            ),
+        ];
+
+        assert!(db
+            .mark_task_completed_with_followups(id, first_claim.attempts, &followups)
+            .is_err());
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, id);
+        assert_eq!(active[0].attempts, second_claim.attempts);
+
+        let by_type = db
+            .count_tasks_by_type(1, Some(SyncPipeline::Frontier))
+            .unwrap();
+        assert_eq!(by_type, (1, 0, 0, 0));
+        let by_status = db.count_tasks_by_status(1).unwrap();
+        assert_eq!(by_status, (0, 1, 0, 0));
+
+        db.mark_task_completed_with_followups(id, second_claim.attempts, &followups)
+            .unwrap();
+
+        let by_type = db
+            .count_tasks_by_type(1, Some(SyncPipeline::Frontier))
+            .unwrap();
+        assert_eq!(by_type, (1, 1, 0, 0));
+        let by_status = db.count_tasks_by_status(1).unwrap();
+        assert_eq!(by_status, (2, 0, 1, 0));
     }
 }

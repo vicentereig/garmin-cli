@@ -47,13 +47,19 @@ enum SyncData {
         gpx_tasks: Vec<SyncTask>,
         next_page: Option<SyncTask>,
         task_id: i64,
+        claim_attempt: i32,
     },
     /// Daily health record
-    Health { record: DailyHealth, task_id: i64 },
+    Health {
+        record: DailyHealth,
+        task_id: i64,
+        claim_attempt: i32,
+    },
     /// Performance metrics record
     Performance {
         record: PerformanceMetrics,
         task_id: i64,
+        claim_attempt: i32,
     },
     /// Track points from GPX
     TrackPoints {
@@ -62,7 +68,18 @@ enum SyncData {
         date: NaiveDate,
         points: Vec<TrackPoint>,
         task_id: i64,
+        claim_attempt: i32,
     },
+}
+
+struct ConsumerWriteOutcome {
+    write_result: Result<()>,
+    task_id: i64,
+    claim_attempt: i32,
+    task_type: &'static str,
+    followup_tasks: Vec<SyncTask>,
+    gpx_followups: u32,
+    activity_followups: u32,
 }
 
 /// Sync engine for orchestrating data synchronization
@@ -1305,6 +1322,7 @@ async fn producer_loop(
         };
 
         let task_id = task.id.unwrap();
+        let claim_attempt = task.attempts;
         context.in_flight.fetch_add(1, Ordering::Relaxed);
 
         // Update progress display
@@ -1334,7 +1352,7 @@ async fn producer_loop(
             };
 
             if should_skip {
-                if let Err(e) = queue.mark_completed(task_id).await {
+                if let Err(e) = queue.mark_completed(task_id, claim_attempt).await {
                     eprintln!("Failed to mark task completed: {}", e);
                 }
                 complete_progress_for_task(&task, &context.progress);
@@ -1370,7 +1388,7 @@ async fn producer_loop(
                     context.in_flight.fetch_sub(1, Ordering::Relaxed);
                     let backoff = Duration::seconds(60);
                     let _ = queue
-                        .mark_failed(task_id, "Consumer channel closed", backoff)
+                        .mark_failed(task_id, claim_attempt, "Consumer channel closed", backoff)
                         .await;
                     break;
                 }
@@ -1378,7 +1396,10 @@ async fn producer_loop(
             Err(GarminError::RateLimited) => {
                 context.rate_limiter.on_rate_limit();
                 let backoff = Duration::seconds(60);
-                if let Err(e) = queue.mark_failed(task_id, "Rate limited", backoff).await {
+                if let Err(e) = queue
+                    .mark_failed(task_id, claim_attempt, "Rate limited", backoff)
+                    .await
+                {
                     eprintln!("Failed to mark task as rate limited: {}", e);
                 }
                 fail_progress_for_task(&task, &context.progress, "Rate limited");
@@ -1391,7 +1412,10 @@ async fn producer_loop(
             Err(e) => {
                 let backoff = Duration::seconds(60);
                 let error_msg = e.to_string();
-                if let Err(e) = queue.mark_failed(task_id, &error_msg, backoff).await {
+                if let Err(e) = queue
+                    .mark_failed(task_id, claim_attempt, &error_msg, backoff)
+                    .await
+                {
                     eprintln!("Failed to mark task as failed: {}", e);
                 }
                 fail_progress_for_task(&task, &context.progress, &error_msg);
@@ -1568,6 +1592,7 @@ async fn fetch_task_data(
     profile_id: i32,
 ) -> Result<SyncData> {
     let task_id = task.id.unwrap();
+    let claim_attempt = task.attempts;
 
     match &task.task_type {
         SyncTaskType::Activities {
@@ -1663,6 +1688,7 @@ async fn fetch_task_data(
                 gpx_tasks,
                 next_page,
                 task_id,
+                claim_attempt,
             })
         }
 
@@ -1688,6 +1714,7 @@ async fn fetch_task_data(
                 date,
                 points,
                 task_id,
+                claim_attempt,
             })
         }
 
@@ -1818,7 +1845,11 @@ async fn fetch_task_data(
                 raw_json: Some(health),
             };
 
-            Ok(SyncData::Health { record, task_id })
+            Ok(SyncData::Health {
+                record,
+                task_id,
+                claim_attempt,
+            })
         }
 
         SyncTaskType::Performance { date } => {
@@ -1919,7 +1950,11 @@ async fn fetch_task_data(
                 raw_json: None,
             };
 
-            Ok(SyncData::Performance { record, task_id })
+            Ok(SyncData::Performance {
+                record,
+                task_id,
+                claim_attempt,
+            })
         }
 
         _ => {
@@ -2186,13 +2221,17 @@ async fn consumer_loop(
                 gpx_tasks,
                 next_page,
                 task_id,
+                claim_attempt,
             } => {
                 // Write activities to Parquet
                 let write_result = parquet.upsert_activities_async(records).await;
 
+                let mut followup_tasks = Vec::new();
+                let mut gpx_followups = 0u32;
+                let mut activity_followups = 0u32;
+
                 if write_result.is_ok() {
-                    // Queue GPX tasks and update progress totals
-                    let mut gpx_added = 0u32;
+                    // Build follow-up tasks, but persist them only after the claim token is accepted.
                     for gpx_task in gpx_tasks {
                         let should_skip = match &gpx_task.task_type {
                             SyncTaskType::DownloadGpx {
@@ -2211,60 +2250,113 @@ async fn consumer_loop(
                             continue;
                         }
 
-                        if let Err(e) = queue.push(gpx_task.clone()).await {
-                            eprintln!("Failed to queue GPX task: {}", e);
-                        } else {
-                            gpx_added += 1;
-                        }
-                    }
-                    if gpx_added > 0 {
-                        progress.gpx.add_total(gpx_added);
+                        followup_tasks.push(gpx_task.clone());
+                        gpx_followups += 1;
                     }
 
-                    // Queue next page if there is one
                     if let Some(next) = next_page {
-                        if let Err(e) = queue.push(next.clone()).await {
-                            eprintln!("Failed to queue next page: {}", e);
-                        }
-                        progress.activities.add_total(1);
+                        followup_tasks.push(next.clone());
+                        activity_followups = 1;
                     }
                 }
 
-                (write_result, *task_id, "Activities")
+                ConsumerWriteOutcome {
+                    write_result,
+                    task_id: *task_id,
+                    claim_attempt: *claim_attempt,
+                    task_type: "Activities",
+                    followup_tasks,
+                    gpx_followups,
+                    activity_followups,
+                }
             }
 
-            SyncData::Health { record, task_id } => {
+            SyncData::Health {
+                record,
+                task_id,
+                claim_attempt,
+            } => {
                 let result = parquet
                     .upsert_daily_health_async(std::slice::from_ref(record))
                     .await;
-                (result, *task_id, "Health")
+                ConsumerWriteOutcome {
+                    write_result: result,
+                    task_id: *task_id,
+                    claim_attempt: *claim_attempt,
+                    task_type: "Health",
+                    followup_tasks: Vec::new(),
+                    gpx_followups: 0,
+                    activity_followups: 0,
+                }
             }
 
-            SyncData::Performance { record, task_id } => {
+            SyncData::Performance {
+                record,
+                task_id,
+                claim_attempt,
+            } => {
                 let result = parquet
                     .upsert_performance_metrics_async(std::slice::from_ref(record))
                     .await;
-                (result, *task_id, "Performance")
+                ConsumerWriteOutcome {
+                    write_result: result,
+                    task_id: *task_id,
+                    claim_attempt: *claim_attempt,
+                    task_type: "Performance",
+                    followup_tasks: Vec::new(),
+                    gpx_followups: 0,
+                    activity_followups: 0,
+                }
             }
 
             SyncData::TrackPoints {
                 date,
                 points,
                 task_id,
+                claim_attempt,
                 ..
             } => {
                 let result = parquet.write_track_points_async(*date, points).await;
-                (result, *task_id, "GPX")
+                ConsumerWriteOutcome {
+                    write_result: result,
+                    task_id: *task_id,
+                    claim_attempt: *claim_attempt,
+                    task_type: "GPX",
+                    followup_tasks: Vec::new(),
+                    gpx_followups: 0,
+                    activity_followups: 0,
+                }
             }
         };
 
-        let (write_result, task_id, task_type) = result;
+        let ConsumerWriteOutcome {
+            write_result,
+            task_id,
+            claim_attempt,
+            task_type,
+            followup_tasks,
+            gpx_followups,
+            activity_followups,
+        } = result;
 
         match write_result {
             Ok(()) => {
-                // Mark task completed
-                if let Err(e) = queue.mark_completed(task_id).await {
+                // Mark task completed and persist follow-up work behind the same claim token.
+                if let Err(e) = queue
+                    .mark_completed_with_followups(task_id, claim_attempt, &followup_tasks)
+                    .await
+                {
                     eprintln!("Failed to mark task completed: {}", e);
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    continue;
+                }
+
+                if gpx_followups > 0 {
+                    progress.gpx.add_total(gpx_followups);
+                }
+
+                if activity_followups > 0 {
+                    progress.activities.add_total(activity_followups);
                 }
 
                 // Update stats
@@ -2299,7 +2391,10 @@ async fn consumer_loop(
                 // Mark task failed
                 let backoff = Duration::seconds(60);
                 let error_msg = e.to_string();
-                if let Err(e) = queue.mark_failed(task_id, &error_msg, backoff).await {
+                if let Err(e) = queue
+                    .mark_failed(task_id, claim_attempt, &error_msg, backoff)
+                    .await
+                {
                     eprintln!("Failed to mark task as failed: {}", e);
                 }
 
@@ -2446,7 +2541,11 @@ mod tests {
             raw_json: None,
         };
 
-        let data = SyncData::Health { record, task_id: 1 };
+        let data = SyncData::Health {
+            record,
+            task_id: 1,
+            claim_attempt: 1,
+        };
         record_write_failure(&data, &progress, "write failed");
 
         assert_eq!(progress.health.get_failed(), 1);
