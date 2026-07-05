@@ -418,6 +418,10 @@ mod tests {
         );
         let id = queue.push(task).unwrap();
         queue.mark_in_progress(id).unwrap();
+        queue
+            .sync_db
+            .set_in_progress_at_seconds_ago_for_test(id, 31 * 60)
+            .unwrap();
 
         // Simulate crash recovery
         let recovered = queue.recover_in_progress().unwrap();

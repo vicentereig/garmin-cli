@@ -12,6 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::db::models::{SyncPipeline, SyncState, SyncTask, SyncTaskType, TaskStatus};
 use crate::error::{GarminError, Result};
 
+const IN_PROGRESS_RECOVERY_AFTER_SECS: i64 = 30 * 60;
+
 /// Task currently marked in progress in the sync queue.
 #[derive(Debug, Clone)]
 pub struct ActiveSyncTask {
@@ -648,8 +650,12 @@ impl SyncDb {
                 "UPDATE sync_tasks
                  SET status = 'pending',
                      in_progress_at = NULL
-                 WHERE status = 'in_progress'",
-                [],
+                 WHERE status = 'in_progress'
+                   AND (
+                       in_progress_at IS NULL
+                       OR in_progress_at <= datetime('now', '-' || ? || ' seconds')
+                   )",
+                params![IN_PROGRESS_RECOVERY_AFTER_SECS],
             )
             .map_err(|e| GarminError::Database(format!("Failed to recover tasks: {}", e)))?;
 
@@ -812,6 +818,34 @@ impl SyncDb {
             tasks.push(row.map_err(|e| GarminError::Database(e.to_string()))?);
         }
         Ok(tasks)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_in_progress_at_seconds_ago_for_test(
+        &self,
+        task_id: i64,
+        seconds_ago: i64,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE sync_tasks
+                 SET in_progress_at = datetime('now', '-' || ? || ' seconds')
+                 WHERE id = ?",
+                params![seconds_ago, task_id],
+            )
+            .map_err(|e| GarminError::Database(format!("Failed to update test task: {}", e)))?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_in_progress_at_for_test(&self, task_id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE sync_tasks SET in_progress_at = NULL WHERE id = ?",
+                params![task_id],
+            )
+            .map_err(|e| GarminError::Database(format!("Failed to update test task: {}", e)))?;
+        Ok(())
     }
 
     /// Clean up old completed tasks
@@ -1051,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_in_progress() {
+    fn test_recover_in_progress_recovers_stale_claims() {
         let db = SyncDb::open_in_memory().unwrap();
 
         let task = SyncTask::new(
@@ -1064,6 +1098,8 @@ mod tests {
 
         let id = db.push_task(&task).unwrap();
         db.mark_task_in_progress(id).unwrap();
+        db.set_in_progress_at_seconds_ago_for_test(id, IN_PROGRESS_RECOVERY_AFTER_SECS + 60)
+            .unwrap();
 
         // Simulate crash recovery
         let recovered = db.recover_in_progress_tasks().unwrap();
@@ -1072,6 +1108,52 @@ mod tests {
         // Task should be poppable again
         let popped = db.pop_task(1, None).unwrap();
         assert!(popped.is_some());
+    }
+
+    #[test]
+    fn test_recover_in_progress_preserves_fresh_claims() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let id = db
+            .push_task(&SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2024, 12, 15).unwrap(),
+                },
+            ))
+            .unwrap();
+        db.mark_task_in_progress(id).unwrap();
+
+        let recovered = db.recover_in_progress_tasks().unwrap();
+        assert_eq!(recovered, 0);
+
+        let active = db.list_in_progress_tasks(1).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, id);
+    }
+
+    #[test]
+    fn test_recover_in_progress_recovers_legacy_claims_without_timestamp() {
+        let db = SyncDb::open_in_memory().unwrap();
+
+        let id = db
+            .push_task(&SyncTask::new(
+                1,
+                SyncPipeline::Frontier,
+                SyncTaskType::DailyHealth {
+                    date: NaiveDate::from_ymd_opt(2024, 12, 15).unwrap(),
+                },
+            ))
+            .unwrap();
+        db.mark_task_in_progress(id).unwrap();
+        db.clear_in_progress_at_for_test(id).unwrap();
+
+        let recovered = db.recover_in_progress_tasks().unwrap();
+        assert_eq!(recovered, 1);
+
+        let popped = db.pop_task(1, None).unwrap().unwrap();
+        assert_eq!(popped.id, Some(id));
     }
 
     #[test]
