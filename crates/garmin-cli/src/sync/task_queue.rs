@@ -114,14 +114,31 @@ impl TaskQueue {
     }
 
     /// Mark a task as completed
-    pub fn mark_completed(&self, task_id: i64) -> Result<()> {
-        self.sync_db.mark_task_completed(task_id)
+    pub fn mark_completed(&self, task_id: i64, claim_attempt: i32) -> Result<()> {
+        self.sync_db.mark_task_completed(task_id, claim_attempt)
+    }
+
+    /// Mark a task as completed and enqueue follow-up tasks atomically
+    pub fn mark_completed_with_followups(
+        &self,
+        task_id: i64,
+        claim_attempt: i32,
+        followups: &[SyncTask],
+    ) -> Result<()> {
+        self.sync_db
+            .mark_task_completed_with_followups(task_id, claim_attempt, followups)
     }
 
     /// Mark a task as failed with retry
-    pub fn mark_failed(&self, task_id: i64, error: &str, retry_after: Duration) -> Result<()> {
+    pub fn mark_failed(
+        &self,
+        task_id: i64,
+        claim_attempt: i32,
+        error: &str,
+        retry_after: Duration,
+    ) -> Result<()> {
         self.sync_db
-            .mark_task_failed(task_id, error, retry_after.num_seconds())
+            .mark_task_failed(task_id, claim_attempt, error, retry_after.num_seconds())
     }
 
     /// Recover tasks that were in progress (crashed)
@@ -247,20 +264,32 @@ impl SharedTaskQueue {
     }
 
     /// Mark a task as completed (thread-safe)
-    pub async fn mark_completed(&self, task_id: i64) -> Result<()> {
+    pub async fn mark_completed(&self, task_id: i64, claim_attempt: i32) -> Result<()> {
         let guard = self.inner.lock().await;
-        guard.mark_completed(task_id)
+        guard.mark_completed(task_id, claim_attempt)
+    }
+
+    /// Mark a task as completed and enqueue follow-up tasks atomically (thread-safe)
+    pub async fn mark_completed_with_followups(
+        &self,
+        task_id: i64,
+        claim_attempt: i32,
+        followups: &[SyncTask],
+    ) -> Result<()> {
+        let guard = self.inner.lock().await;
+        guard.mark_completed_with_followups(task_id, claim_attempt, followups)
     }
 
     /// Mark a task as failed with retry (thread-safe)
     pub async fn mark_failed(
         &self,
         task_id: i64,
+        claim_attempt: i32,
         error: &str,
         retry_after: Duration,
     ) -> Result<()> {
         let guard = self.inner.lock().await;
-        guard.mark_failed(task_id, error, retry_after)
+        guard.mark_failed(task_id, claim_attempt, error, retry_after)
     }
 
     /// Get count of pending tasks (thread-safe)
@@ -364,7 +393,7 @@ mod tests {
         let id = queue.push(task).unwrap();
 
         queue.mark_in_progress(id).unwrap();
-        queue.mark_completed(id).unwrap();
+        queue.mark_completed(id, 1).unwrap();
 
         // Should not pop completed tasks
         let popped = queue.pop().unwrap();
