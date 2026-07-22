@@ -356,6 +356,12 @@ enum SyncCommands {
         /// Force re-sync (ignore existing data)
         #[arg(long)]
         force: bool,
+        /// Directory or .log file path for detailed sync logs
+        #[arg(long)]
+        log: Option<String>,
+        /// Include full JSON/text responses in the sync log
+        #[arg(long)]
+        verbose: bool,
     },
     /// Show sync status
     Status {
@@ -504,6 +510,8 @@ async fn main() -> garmin_cli::Result<()> {
                 dry_run,
                 backfill,
                 force,
+                log,
+                verbose,
             } => {
                 commands::sync_run(
                     cli.profile,
@@ -516,6 +524,8 @@ async fn main() -> garmin_cli::Result<()> {
                     dry_run,
                     backfill,
                     force,
+                    log,
+                    verbose,
                 )
                 .await
             }
