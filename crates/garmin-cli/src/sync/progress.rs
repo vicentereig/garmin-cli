@@ -44,6 +44,24 @@ pub struct ErrorEntry {
     pub error: String,
 }
 
+/// The task currently assigned to one producer worker.
+#[derive(Debug, Clone)]
+pub struct WorkerProgress {
+    pub role: &'static str,
+    pub id: usize,
+    pub task_id: Option<i64>,
+    pub stream: &'static str,
+    pub item: String,
+    pub started_at: Instant,
+    pub status: String,
+}
+
+impl WorkerProgress {
+    pub fn elapsed(&self) -> String {
+        format_elapsed(self.started_at.elapsed().as_secs())
+    }
+}
+
 /// Progress tracking for a single data stream
 #[derive(Debug)]
 pub struct StreamProgress {
@@ -207,6 +225,10 @@ pub struct SyncProgress {
     pub planning_step: Mutex<PlanningStep>,
     /// Oldest activity date found during planning
     pub oldest_activity_date: Mutex<Option<String>>,
+    /// Current task for each producer worker
+    workers: Mutex<Vec<WorkerProgress>>,
+    /// Number of producer workers shown in the progress block
+    worker_slots: AtomicU32,
 }
 
 impl SyncProgress {
@@ -231,6 +253,8 @@ impl SyncProgress {
             shutdown: AtomicBool::new(false),
             planning_step: Mutex::new(PlanningStep::FetchingProfile),
             oldest_activity_date: Mutex::new(None),
+            workers: Mutex::new(Vec::new()),
+            worker_slots: AtomicU32::new(0),
         }
     }
 
@@ -357,6 +381,109 @@ impl SyncProgress {
         self.errors.lock().unwrap().clone()
     }
 
+    pub fn set_worker_slots(&self, slots: usize) {
+        self.worker_slots.store(slots as u32, Ordering::Relaxed);
+    }
+
+    pub fn set_worker_task(
+        &self,
+        role: &'static str,
+        id: usize,
+        task_id: Option<i64>,
+        stream: &'static str,
+        item: String,
+        status: impl Into<String>,
+    ) {
+        let mut workers = self.workers.lock().unwrap();
+        let status = status.into();
+        if let Some(worker) = workers
+            .iter_mut()
+            .find(|worker| worker.role == role && worker.id == id)
+        {
+            worker.task_id = task_id;
+            worker.stream = stream;
+            worker.item = item;
+            worker.started_at = Instant::now();
+            worker.status = status;
+        } else {
+            workers.push(WorkerProgress {
+                role,
+                id,
+                task_id,
+                stream,
+                item,
+                started_at: Instant::now(),
+                status,
+            });
+        }
+    }
+
+    pub fn set_worker_status(&self, role: &'static str, id: usize, status: impl Into<String>) {
+        if let Some(worker) = self
+            .workers
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|worker| worker.role == role && worker.id == id)
+        {
+            worker.status = status.into();
+        }
+    }
+
+    pub fn clear_worker(&self, role: &'static str, id: usize) {
+        self.workers
+            .lock()
+            .unwrap()
+            .retain(|worker| worker.role != role || worker.id != id);
+    }
+
+    /// Render the stable-height progress block used by the interactive reporter.
+    pub fn status_lines(&self) -> Vec<String> {
+        let width = terminal_width();
+        let summary = format!(
+            "Act {}/{} | GPX {}/{} | Health {}/{} | Perf {}/{} | elapsed {}",
+            self.activities.get_completed(),
+            self.activities.get_total(),
+            self.gpx.get_completed(),
+            self.gpx.get_total(),
+            self.health.get_completed(),
+            self.health.get_total(),
+            self.performance.get_completed(),
+            self.performance.get_total(),
+            self.elapsed_str(),
+        );
+        let workers = self.workers.lock().unwrap();
+        let slots = self.worker_slots.load(Ordering::Relaxed) as usize;
+        let mut lines = vec![truncate_line(summary, width)];
+
+        for role in ["P", "C"] {
+            for id in 0..slots {
+                let line = match workers
+                    .iter()
+                    .find(|worker| worker.role == role && worker.id == id)
+                {
+                    Some(worker) => format!(
+                        "{}{}  {:<9} #{} {:<24} {:<18} {}",
+                        role,
+                        worker.id,
+                        worker.stream,
+                        worker
+                            .task_id
+                            .map(|task_id| task_id.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        worker.item,
+                        worker.status,
+                        worker.elapsed(),
+                    ),
+                    None => format!("{}{}  idle", role, id),
+                };
+                lines.push(truncate_line(line, width));
+            }
+        }
+
+        lines
+    }
+
     /// Get current task description (finds first active stream)
     pub fn get_current_task(&self) -> Option<String> {
         // Check streams in order of typical processing
@@ -479,25 +606,35 @@ impl SyncProgress {
 
     /// Print a status line for terminal progress reporting.
     pub fn print_simple_status(&self) {
-        let act = &self.activities;
-        let gpx = &self.gpx;
-        let health = &self.health;
-        let perf = &self.performance;
-
-        print!(
-            "\rAct: {}/{} | GPX: {}/{} | Health: {}/{} | Perf: {}/{} | {} ",
-            act.get_completed(),
-            act.get_total(),
-            gpx.get_completed(),
-            gpx.get_total(),
-            health.get_completed(),
-            health.get_total(),
-            perf.get_completed(),
-            perf.get_total(),
-            self.elapsed_str(),
-        );
+        print!("{}", self.status_lines().join("\n"));
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
+}
+
+fn format_elapsed(secs: u64) -> String {
+    let mins = secs / 60;
+    if mins > 0 {
+        format!("{}m {}s", mins, secs % 60)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
+fn terminal_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|width| *width >= 40)
+        .unwrap_or(120)
+}
+
+fn truncate_line(line: String, width: usize) -> String {
+    if line.chars().count() <= width {
+        return line;
+    }
+    let mut result: String = line.chars().take(width.saturating_sub(1)).collect();
+    result.push('~');
+    result
 }
 
 impl Default for SyncProgress {
@@ -564,5 +701,32 @@ mod tests {
         progress.health.complete_one();
 
         assert_eq!(progress.total_completed(), 2);
+    }
+
+    #[test]
+    fn worker_progress_is_visible_and_has_fixed_height() {
+        let progress = SyncProgress::new();
+        progress.set_worker_slots(2);
+        progress.set_worker_task(
+            "P",
+            0,
+            Some(42),
+            "Health",
+            "2026-01-01".to_string(),
+            "fetching",
+        );
+
+        let lines = progress.status_lines();
+        assert_eq!(lines.len(), 5);
+        assert!(lines[1].contains("P0"));
+        assert!(lines[1].contains("fetching"));
+        assert_eq!(lines[2], "P1  idle");
+        assert_eq!(lines[3], "C0  idle");
+        assert_eq!(lines[4], "C1  idle");
+
+        progress.set_worker_status("P", 0, "writing");
+        assert!(progress.status_lines()[1].contains("writing"));
+        progress.clear_worker("P", 0);
+        assert!(progress.status_lines()[1].contains("idle"));
     }
 }
