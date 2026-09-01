@@ -957,10 +957,17 @@ pub async fn hrv(date: Option<String>, profile: Option<String>) -> Result<()> {
 
     let path = format!("/hrv-service/hrv/{}", date);
 
-    let data: serde_json::Value = client.get_json(&oauth2, &path).await?;
-
     println!("HRV Data for {}", date);
     println!("{}", "-".repeat(40));
+
+    // Garmin returns 204 when HRV is not available for a date (for example,
+    // before the device has produced an overnight HRV measurement). That is a
+    // valid no-data response, not a malformed API response.
+    let Some(data): Option<serde_json::Value> = client.get_optional_json(&oauth2, &path).await?
+    else {
+        println!("No HRV data available.");
+        return Ok(());
+    };
 
     if let Some(summary) = data.get("hrvSummary") {
         if let Some(weekly) = summary.get("weeklyAvg").and_then(|v| v.as_i64()) {
