@@ -51,8 +51,8 @@ rpassword = "7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Parquet/Arrow
-arrow = { version = "54", default-features = false, features = ["prettyprint"] }
-parquet = { version = "54", default-features = false, features = ["arrow", "snap", "zstd"] }
+arrow = { version = "58", default-features = false, features = ["prettyprint"] }
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd"] }
 
 # Spatial/GIS
 gpx = "0.10"
